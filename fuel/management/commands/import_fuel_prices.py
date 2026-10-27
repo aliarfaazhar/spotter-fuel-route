@@ -12,7 +12,6 @@ What the raw feed needs (all found by profiling it):
 """
 
 import csv
-import gzip
 import re
 import time
 from collections import defaultdict
@@ -30,8 +29,18 @@ HIGHWAY_RE = re.compile(r"^\s*((?:I|US|SR|HWY|STATE ROUTE|ROUTE)[\s-]*\d+[A-Z]?)
 EXIT_RE = re.compile(r"\bEXIT\s*#?\s*(\d+[A-Z]?)", re.I)
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
 USER_AGENT = "spotter-fuel-route/1.0 (+https://github.com/aliarfaazhar/spotter-fuel-route)"
-STATION_FIELDS = ["opis_id", "name", "address", "city", "state", "rack_id", "price", "highway", "exit_number",
-                  "place_key"]  # fmt: skip
+STATION_FIELDS = [
+    "opis_id",
+    "name",
+    "address",
+    "city",
+    "state",
+    "rack_id",
+    "price",
+    "highway",
+    "exit_number",
+    "place_key",
+]
 
 
 def parse_highway(address: str) -> tuple[str, str]:
@@ -55,8 +64,11 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("csv_path", type=Path)
-        parser.add_argument("--geocode-missing", action="store_true",
-                            help="Locate towns missing from the gazetteer via Nominatim (1 req/s).")  # fmt: skip
+        parser.add_argument(
+            "--geocode-missing",
+            action="store_true",
+            help="Locate towns missing from the gazetteer via Nominatim (1 req/s).",
+        )
         parser.add_argument("--no-load", action="store_true", help="Only write the data files.")
 
     def handle(self, *args, csv_path: Path, geocode_missing: bool, no_load: bool, **opts):
@@ -82,11 +94,20 @@ class Command(BaseCommand):
                     continue
                 seen.add(ident)
                 highway, exit_number = parse_highway(r["Address"])
-                rows.append({
-                    "opis_id": int(r["OPIS Truckstop ID"]), "name": r["Truckstop Name"], "address": r["Address"],
-                    "city": r["City"], "state": r["State"], "rack_id": int(r["Rack ID"]), "price": r["Retail Price"],
-                    "highway": highway, "exit_number": exit_number, "place_key": place_key(r["City"]),
-                })  # fmt: skip
+                rows.append(
+                    {
+                        "opis_id": int(r["OPIS Truckstop ID"]),
+                        "name": r["Truckstop Name"],
+                        "address": r["Address"],
+                        "city": r["City"],
+                        "state": r["State"],
+                        "rack_id": int(r["Rack ID"]),
+                        "price": r["Retail Price"],
+                        "highway": highway,
+                        "exit_number": exit_number,
+                        "place_key": place_key(r["City"]),
+                    }
+                )
 
         towns = {(r["place_key"], r["state"]): r["city"] for r in rows}
         missing = sorted((k, s, city) for (k, s), city in towns.items() if (k, s) not in known)
@@ -102,7 +123,7 @@ class Command(BaseCommand):
         kept = [r for r in rows if (r["place_key"], r["state"]) not in unresolved]
         stats["dropped_unlocated_rows"] = len(rows) - len(kept)
 
-        with gzip.open(datafiles.STATIONS, "wt", newline="", encoding="utf-8") as fh:
+        with datafiles.write_gz(datafiles.STATIONS) as fh:
             writer = csv.DictWriter(fh, fieldnames=STATION_FIELDS)
             writer.writeheader()
             writer.writerows(sorted(kept, key=lambda r: (r["opis_id"], r["rack_id"], r["price"])))
@@ -127,13 +148,13 @@ class Command(BaseCommand):
             datafiles.PLACES_EXTRA.open("a", newline="", encoding="utf-8") as fh,
             httpx.Client(headers={"User-Agent": USER_AGENT}, timeout=20) as client,
         ):
-            writer = csv.DictWriter(fh, fieldnames=["key", "name", "state", "lat", "lon", "land_area_sqmi",
-                                                   "population", "source"])  # fmt: skip
+            writer = csv.DictWriter(
+                fh, fieldnames=["key", "name", "state", "lat", "lon", "land_area_sqmi", "population", "source"]
+            )
             if not extra_exists:
                 writer.writeheader()
             for i, (key, state, city) in enumerate(missing, 1):
-                params = {"city": city, "state": US_STATES[state], "countrycodes": "us", "format": "jsonv2",
-                          "limit": 1}  # fmt: skip
+                params = {"city": city, "state": US_STATES[state], "countrycodes": "us", "format": "jsonv2", "limit": 1}
                 resp = client.get(NOMINATIM, params=params)
                 time.sleep(1.1)  # Nominatim usage policy: max 1 request/second
                 hits = resp.json() if resp.status_code == 200 else []
@@ -145,8 +166,18 @@ class Command(BaseCommand):
                 if not (lo_lat <= lat <= hi_lat and lo_lon <= lon <= hi_lon):
                     self.stdout.write(f"  [{i}/{len(missing)}] outside {state}, ignored: {city}")
                     continue
-                writer.writerow({"key": key, "name": city, "state": state, "lat": lat, "lon": lon,
-                                 "land_area_sqmi": "", "population": "", "source": "nominatim"})  # fmt: skip
+                writer.writerow(
+                    {
+                        "key": key,
+                        "name": city,
+                        "state": state,
+                        "lat": lat,
+                        "lon": lon,
+                        "land_area_sqmi": "",
+                        "population": "",
+                        "source": "nominatim",
+                    }
+                )
                 fh.flush()
                 known[(key, state)] = (lat, lon)
                 self.stdout.write(f"  [{i}/{len(missing)}] {city}, {state} -> {lat:.4f},{lon:.4f}")

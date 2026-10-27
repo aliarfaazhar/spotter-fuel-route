@@ -10,7 +10,6 @@ Sources (all free):
 """
 
 import csv
-import gzip
 import io
 import tempfile
 import zipfile
@@ -20,12 +19,15 @@ import httpx
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from fuel.services import datafiles
 from fuel.services.names import US_STATES, census_aliases, place_key
 
 CENSUS = "https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2026_Gazetteer/2026_Gaz_{}_national.zip"
 GEONAMES = "https://download.geonames.org/export/dump/US.zip"
 GEONAMES_CODES = {"PPL", "PPLA", "PPLA2", "PPLA3", "PPLA4", "PPLC", "PPLL", "PPLS", "PPLF"}
-SOURCE_RANK = {"census_place": 0, "census_cousub": 1, "geonames": 2}
+# Townships (county subdivisions) come last: their interior point can be far from the town people mean
+# (the "Honolulu" subdivision's point is in the Northwestern Hawaiian Islands).
+SOURCE_RANK = {"census_place": 0, "geonames": 1, "census_cousub": 2}
 FIELDS = ["key", "name", "state", "lat", "lon", "land_area_sqmi", "population", "source"]
 
 
@@ -57,7 +59,12 @@ class Command(BaseCommand):
 
         best: dict[tuple[str, str], dict] = {}
 
+        population: dict[tuple[str, str], int] = {}
+
         def offer(row: dict) -> None:
+            if row["source"] == "geonames":
+                ident = (row["key"], row["state"])
+                population[ident] = max(population.get(ident, 0), row["population"])
             ident = (row["key"], row["state"])
             current = best.get(ident)
             if current is None or self._better(row, current):
@@ -70,12 +77,19 @@ class Command(BaseCommand):
                 for i, name in enumerate(census_aliases(rec["NAME"])):
                     key = place_key(name)
                     if key:
-                        offer({
-                            "key": key, "name": name, "state": rec["USPS"],
-                            "lat": float(rec["INTPTLAT"]), "lon": float(rec["INTPTLONG"]),
-                            "land_area_sqmi": float(rec["ALAND_SQMI"] or 0), "population": "", "source": source,
-                            "alias": i > 0,
-                        })  # fmt: skip
+                        offer(
+                            {
+                                "key": key,
+                                "name": name,
+                                "state": rec["USPS"],
+                                "lat": float(rec["INTPTLAT"]),
+                                "lon": float(rec["INTPTLONG"]),
+                                "land_area_sqmi": float(rec["ALAND_SQMI"] or 0),
+                                "population": "",
+                                "source": source,
+                                "alias": i > 0,
+                            }
+                        )
 
         with (src / "US.txt").open(encoding="utf-8") as fh:
             for line in fh:
@@ -85,21 +99,33 @@ class Command(BaseCommand):
                 for name in dict.fromkeys([f[1], f[2]]):
                     key = place_key(name)
                     if key:
-                        offer({
-                            "key": key, "name": f[1], "state": f[10], "lat": float(f[4]), "lon": float(f[5]),
-                            "land_area_sqmi": "", "population": int(f[14] or 0), "source": "geonames",
-                            "alias": False,
-                        })  # fmt: skip
+                        offer(
+                            {
+                                "key": key,
+                                "name": f[1],
+                                "state": f[10],
+                                "lat": float(f[4]),
+                                "lon": float(f[5]),
+                                "land_area_sqmi": "",
+                                "population": int(f[14] or 0),
+                                "source": "geonames",
+                                "alias": False,
+                            }
+                        )
 
         out.mkdir(parents=True, exist_ok=True)
+        # Census has no population; borrow GeoNames' so a bare "Atlanta" can pick the biggest Atlanta.
+        for ident, row in best.items():
+            if not row["population"] and population.get(ident):
+                row["population"] = population[ident]
         rows = sorted(best.values(), key=lambda r: (r["state"], r["key"]))
-        with gzip.open(out / "places.csv.gz", "wt", newline="", encoding="utf-8") as fh:
+        with datafiles.write_gz(out / "places.csv.gz") as fh:
             writer = csv.DictWriter(fh, fieldnames=FIELDS, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(rows)
 
         zips = sorted(_read_census(next(src.glob("*zcta_national.txt"))), key=lambda r: r["GEOID"])
-        with gzip.open(out / "zips.csv.gz", "wt", newline="", encoding="utf-8") as fh:
+        with datafiles.write_gz(out / "zips.csv.gz") as fh:
             writer = csv.writer(fh)
             writer.writerow(["code", "lat", "lon"])
             writer.writerows([z["GEOID"], z["INTPTLAT"], z["INTPTLONG"]] for z in zips)

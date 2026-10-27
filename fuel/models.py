@@ -24,9 +24,10 @@ class Place(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["key", "state"], name="uniq_place_key_state"),
-            models.CheckConstraint(condition=Q(lat__gte=-90, lat__lte=90, lon__gte=-180, lon__lte=180),
-                                   name="place_valid_coords"),
-        ]  # fmt: skip
+            models.CheckConstraint(
+                condition=Q(lat__gte=-90, lat__lte=90, lon__gte=-180, lon__lte=180), name="place_valid_coords"
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.name}, {self.state}"
@@ -54,9 +55,6 @@ class Station(models.Model):
     highway = models.CharField(max_length=20, blank=True, help_text="First road in the address, e.g. I-44.")
     exit_number = models.CharField(max_length=10, blank=True)
     place = models.ForeignKey(Place, on_delete=models.PROTECT, related_name="stations")
-
-    class Meta:
-        indexes = [models.Index(fields=["state"])]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.city}, {self.state})"
