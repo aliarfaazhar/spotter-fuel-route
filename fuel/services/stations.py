@@ -14,7 +14,7 @@ from scipy.spatial import cKDTree
 
 from fuel.models import Station
 
-from .geometry import EARTH_RADIUS_MILES, chord_to_miles, cumulative_miles, miles_to_chord, to_xyz
+from .geometry import chord_to_miles, cumulative_miles, miles_to_chord, to_xyz
 from .routing import Route
 
 ROUTE_SAMPLE_SPACING_MILES = 0.5
@@ -68,9 +68,13 @@ def _build_index() -> StationIndex:
     arr = np.array([(r[0], r[1], r[2], float(r[3])) for r in rows], dtype=float).reshape(-1, 4)
     xyz = to_xyz(arr[:, 1], arr[:, 2]) if len(arr) else np.empty((0, 3))
     return StationIndex(
-        ids=arr[:, 0].astype(int), lat=arr[:, 1], lon=arr[:, 2], price=arr[:, 3], xyz=xyz,
+        ids=arr[:, 0].astype(int),
+        lat=arr[:, 1],
+        lon=arr[:, 2],
+        price=arr[:, 3],
+        xyz=xyz,
         tree=cKDTree(xyz if len(xyz) else np.zeros((1, 3))),
-    )  # fmt: skip
+    )
 
 
 @dataclass(frozen=True)
@@ -96,9 +100,11 @@ def match_route(route: Route, index: StationIndex, max_buffer_miles: float) -> R
     pad_lat = max_buffer_miles / 69.0
     pad_lon = max_buffer_miles / (69.0 * max(np.cos(np.radians(np.abs(pts[:, 0]).max())), 0.05))
     box = (
-        (index.lat >= pts[:, 0].min() - pad_lat) & (index.lat <= pts[:, 0].max() + pad_lat)
-        & (index.lon >= pts[:, 1].min() - pad_lon) & (index.lon <= pts[:, 1].max() + pad_lon)
-    )  # fmt: skip
+        (index.lat >= pts[:, 0].min() - pad_lat)
+        & (index.lat <= pts[:, 0].max() + pad_lat)
+        & (index.lon >= pts[:, 1].min() - pad_lon)
+        & (index.lon <= pts[:, 1].max() + pad_lon)
+    )
     candidates = np.flatnonzero(box)
     if candidates.size == 0:
         return empty
@@ -111,6 +117,3 @@ def match_route(route: Route, index: StationIndex, max_buffer_miles: float) -> R
         mile=pts_mile[nearest[hit]],
         off_route_miles=chord_to_miles(dist[hit]),
     )
-
-
-__all__ = ["EARTH_RADIUS_MILES", "RouteMatches", "StationIndex", "get_index", "match_route", "reset_index"]
