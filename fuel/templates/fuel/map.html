@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fuel Route Planner</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <style>
+    :root { --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e4e4df; --accent:#1f6feb; --stop:#d9480f; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#141413; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94; --line:#33332f; --accent:#58a6ff; --stop:#ff8a4c; } }
+    * { box-sizing: border-box; }
+    body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--ink); display:grid; grid-template-columns:minmax(300px,380px) 1fr; height:100vh; }
+    aside { background:var(--panel); border-right:1px solid var(--line); padding:16px; overflow:auto; }
+    h1 { font-size:17px; margin:0 0 12px; }
+    form { display:grid; gap:8px; margin-bottom:14px; }
+    label { font-size:12px; color:var(--muted); display:grid; gap:3px; }
+    input, select, button { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
+    button { background:var(--accent); color:#fff; border:0; cursor:pointer; font-weight:600; }
+    .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 14px; }
+    .stat { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+    .stat b { display:block; font-size:18px; }
+    .stat span { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    ol { padding-left:0; list-style:none; margin:0; display:grid; gap:8px; }
+    li { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+    li .n { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; background:var(--stop); color:#fff; font-size:11px; font-weight:700; margin-right:6px; }
+    li small { color:var(--muted); display:block; }
+    .msg { padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--stop) 14%, transparent); margin-bottom:10px; }
+    #map { height:100vh; }
+    .pin { background:var(--stop); color:#fff; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; font-weight:700; font-size:12px; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.4); }
+    @media (max-width: 760px) { body { grid-template-columns:1fr; grid-template-rows:auto 60vh; height:auto; } #map { height:60vh; } aside { border-right:0; padding:16px; } }
+  </style>
+</head>
+<body>
+<aside>
+  <h1>Fuel Route Planner</h1>
+  <form id="f">
+    <label>Start <input name="start" required placeholder="Chicago, IL · 60601 · 41.88,-87.63"></label>
+    <label>Finish <input name="finish" required placeholder="Houston, TX"></label>
+    <label>Tank at start
+      <select name="start_fuel"><option value="empty">Empty (buy near the start)</option><option value="full">Full (500 mi)</option></select>
+    </label>
+    <button>Plan route</button>
+  </form>
+  <div id="out"></div>
+</aside>
+<div id="map"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const map = L.map('map').setView([39.5, -98.35], 4);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+const form = document.getElementById('f'), out = document.getElementById('out');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const usd = n => '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+const params = new URLSearchParams(location.search);
+for (const k of ['start', 'finish', 'start_fuel']) if (params.get(k)) form.elements[k].value = params.get(k);
+
+async function plan() {
+  const q = new URLSearchParams(new FormData(form)); q.set('include', 'route');
+  history.replaceState(null, '', '?' + new URLSearchParams([...q].filter(([k]) => k !== 'include')));
+  out.innerHTML = '<p>Planning…</p>'; layer.clearLayers();
+  const res = await fetch('/api/route?' + q);
+  const data = await res.json();
+  if (!res.ok) { out.innerHTML = `<div class="msg"><b>${esc(data.error.code)}</b><br>${esc(data.error.message)}</div>`; return; }
+  render(data);
+}
+
+function render(d) {
+  const line = L.geoJSON(d.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--accent'), weight: 5, opacity: .85}}).addTo(layer);
+  L.marker([d.start.lat, d.start.lon]).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
+  L.marker([d.finish.lat, d.finish.lon]).bindPopup('<b>Finish</b><br>' + esc(d.finish.label)).addTo(layer);
+  d.fuel_stops.forEach(s => L.marker([s.lat, s.lon], {icon: L.divIcon({className: '', html: `<div class="pin">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]})})
+    .bindPopup(`<b>${esc(s.name)}</b><br>${esc(s.address)}, ${esc(s.city)}, ${esc(s.state)}<br>$${s.price_per_gallon}/gal · ${s.gallons} gal · <b>${usd(s.cost)}</b><br>mile ${s.mile_marker}`).addTo(layer));
+  map.fitBounds(line.getBounds(), {padding: [30, 30]});
+  out.innerHTML = `
+    ${d.warnings.map(w => `<div class="msg">${esc(w.message)}</div>`).join('')}
+    <div class="stats">
+      <div class="stat"><span>Fuel cost</span><b>${usd(d.total_fuel_cost)}</b></div>
+      <div class="stat"><span>Distance</span><b>${d.distance_miles.toLocaleString()} mi</b></div>
+      <div class="stat"><span>Stops</span><b>${d.fuel_stops.length}</b></div>
+      <div class="stat"><span>Saved vs naive</span><b>${d.savings_vs_naive === null ? '–' : usd(d.savings_vs_naive)}</b></div>
+    </div>
+    <ol>${d.fuel_stops.map(s => `<li><span class="n">${s.stop}</span><b>${esc(s.name)}</b>
+      <small>${esc(s.city)}, ${esc(s.state)} · ${esc(s.highway || '')}${s.exit ? ' exit ' + esc(s.exit) : ''} · mile ${s.mile_marker}</small>
+      <small>$${s.price_per_gallon}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b></small></li>`).join('')}</ol>
+    <p><small>${esc(d.routing_provider)} · routing calls: ${d.external_api_calls.routing} · ${d.timings_ms.total} ms · <a href="${esc(d.google_maps_url)}" target="_blank" rel="noopener">Open in Google Maps</a></small></p>`;
+}
+
+form.addEventListener('submit', e => { e.preventDefault(); plan(); });
+if (form.elements.start.value && form.elements.finish.value) plan();
+</script>
+</body>
+</html>
