@@ -1,0 +1,74 @@
+{
+  "info": {
+    "name": "Spotter fuel route API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Set base_url (default http://localhost:8000). The NYC -> LA request has a Visualizer: open the response's 'Visualize' tab to see the route map."
+  },
+  "variable": [{ "key": "base_url", "value": "http://localhost:8000" }],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (pm.response.code === 200) {",
+          "  const d = pm.response.json();",
+          "  pm.test('routing API called at most once', () => pm.expect(d.external_api_calls.routing).to.be.at.most(1));",
+          "  pm.test('total = sum of stops', () => {",
+          "    const sum = d.fuel_stops.reduce((a, s) => a + s.cost, 0);",
+          "    pm.expect(Math.abs(sum - d.total_fuel_cost)).to.be.below(0.005);",
+          "  });",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "NYC -> LA (with map in Visualize tab)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const d = pm.response.json();",
+              "if (!d.route) return;",
+              "const tpl = `<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css\"/>",
+              "<div style=\"font:14px system-ui;margin-bottom:6px\"><b>{{cost}}</b> fuel · {{miles}} mi · {{stops_n}} stops · saved {{saved}} vs naive · routing calls: {{calls}}</div>",
+              "<div id=\"m\" style=\"height:520px\"></div>",
+              "<script src=\"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js\"></script>",
+              "<script>pm.getData((e, d) => {",
+              "  const map = L.map('m'); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution: '&copy; OpenStreetMap'}).addTo(map);",
+              "  const line = L.geoJSON(d.route, {style: {color: '#1f6feb', weight: 5}}).addTo(map); map.fitBounds(line.getBounds());",
+              "  d.stops.forEach(s => L.marker([s.lat, s.lon]).bindTooltip(s.stop + '. ' + s.city + ', ' + s.state + ' $' + s.price_per_gallon + ' x ' + s.gallons + ' gal = $' + s.cost).addTo(map));",
+              "});</script>`;",
+              "pm.visualizer.set(tpl, {route: d.route, stops: d.fuel_stops, cost: '$' + d.total_fuel_cost, miles: d.distance_miles, stops_n: d.fuel_stops.length, saved: '$' + d.savings_vs_naive, calls: d.external_api_calls.routing});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/route?start=New York, NY&finish=Los Angeles, CA&include=route"
+      }
+    },
+    { "name": "Chicago -> Houston (city name only)", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=Chicago&finish=Houston, TX" } },
+    { "name": "Short trip: Dallas -> Austin", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=Dallas, TX&finish=Austin, TX" } },
+    { "name": "ZIP codes: 10001 -> 90012", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=10001&finish=90012" } },
+    { "name": "Address + lat,lon", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=1600 Pennsylvania Ave NW, Washington, DC 20500&finish=25.7617,-80.1918" } },
+    { "name": "Strict cheapest (stop_cost=0), full tank", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=New York, NY&finish=Los Angeles, CA&stop_cost=0&start_fuel=full" } },
+    {
+      "name": "POST body",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\"start\": \"Denver, CO\", \"finish\": \"Atlanta, GA\", \"start_fuel\": \"250\"}" },
+        "url": "{{base_url}}/api/route"
+      }
+    },
+    { "name": "422: no fuel coverage (SF -> Seattle)", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=San Francisco, CA&finish=Seattle, WA" } },
+    { "name": "400: outside the USA", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=Toronto, Ontario&finish=Chicago, IL" } },
+    { "name": "400: ambiguous city", "request": { "method": "GET", "url": "{{base_url}}/api/route?start=Springfield&finish=Chicago, IL" } }
+  ]
+}

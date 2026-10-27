@@ -1,0 +1,28 @@
+services:
+  api:
+    build: .
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: postgres://fuel:fuel@db:5432/fuel
+      REDIS_URL: redis://redis:6379/0
+      DJANGO_DEBUG: "false"
+      DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
+      ORS_API_KEY: ${ORS_API_KEY:-}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_started }
+
+  db:
+    image: postgres:17-alpine
+    environment: { POSTGRES_DB: fuel, POSTGRES_USER: fuel, POSTGRES_PASSWORD: fuel }
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fuel -d fuel"]
+      interval: 2s
+      retries: 30
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  pgdata:
