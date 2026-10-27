@@ -24,6 +24,10 @@
     li { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
     li .n { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; background:var(--stop); color:#fff; font-size:11px; font-weight:700; margin-right:6px; }
     li small { color:var(--muted); display:block; }
+    .unlisted { background:var(--muted) !important; }
+    .options { margin-bottom:12px; }
+    .options li.chosen { border-color:var(--accent); }
+    .stat small { display:block; font-size:11px; color:var(--muted); }
     .msg { padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--stop) 14%, transparent); margin-bottom:10px; }
     #map { height:100vh; }
     .pin { background:var(--stop); color:#fff; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; font-weight:700; font-size:12px; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.4); }
@@ -77,23 +81,35 @@ async function plan() {
 }
 
 function render(d) {
+  // Route options the plan didn't take (e.g. the direct route when it's out of range on listed stations): dashed grey,
+  // with the stretch that has no listed station in orange.
+  d.route_options.filter(o => o.route).forEach(o => L.geoJSON(o.route, {style: {color: '#8a8a85', weight: 4, dashArray: '6 8'}})
+    .bindPopup(`<b>${esc(o.name)}</b><br>${esc(o.note)}`).addTo(layer));
+  d.route_options.filter(o => o.gap && o.gap.route).forEach(o => L.geoJSON(o.gap.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--stop'), weight: 6}})
+    .bindPopup(`No listed station for ${o.gap.miles} mi`).addTo(layer));
   const line = L.geoJSON(d.map.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--accent'), weight: 5, opacity: .85}}).addTo(layer);
   L.marker([d.start.lat, d.start.lon]).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
   L.marker([d.finish.lat, d.finish.lon]).bindPopup('<b>Finish</b><br>' + esc(d.finish.label)).addTo(layer);
-  d.fuel_stops.forEach(s => L.marker([s.lat, s.lon], {icon: L.divIcon({className: '', html: `<div class="pin">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]})})
-    .bindPopup(`<b>${esc(s.name)}</b><br>${esc(s.address)}, ${esc(s.city)}, ${esc(s.state)}<br>$${s.price_per_gallon}/gal · ${s.gallons} gal · <b>${usd(s.cost)}</b><br>mile ${s.mile_marker}`).addTo(layer));
-  map.fitBounds(line.getBounds(), {padding: [30, 30]});
+  const where = s => s.listed ? `${esc(s.city)}, ${esc(s.state)} · ${esc(s.address)}` : 'Any station here (not in the price list)';
+  const bill = s => s.listed ? `$${s.price_per_gallon}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b>` : `${s.gallons} gal, unpriced`;
+  d.fuel_stops.forEach(s => L.marker([s.lat, s.lon], {icon: L.divIcon({className: '', html: `<div class="pin${s.listed ? '' : ' unlisted'}">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]})})
+    .bindPopup(`<b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b><br>${where(s)}<br>${bill(s)}<br>mile ${s.mile_marker}`).addTo(layer));
+  const bounds = line.getBounds();
+  layer.eachLayer(l => l.getBounds && bounds.extend(l.getBounds()));  // include any other route options
+  map.fitBounds(bounds, {padding: [30, 30]});
   out.innerHTML = `
     ${d.warnings.map(w => `<div class="msg">${esc(w.message)}</div>`).join('')}
+    ${d.route_options.length > 1 ? `<ol class="options">${d.route_options.map(o => `<li class="${o.selected ? 'chosen' : ''}">
+      <b>${o.selected ? '✓ ' : '✕ '}${esc(o.name)}</b> · ${o.distance_miles.toLocaleString()} mi<small>${esc(o.note)}</small></li>`).join('')}</ol>` : ''}
     <div class="stats">
-      <div class="stat"><span>Fuel cost</span><b>${usd(d.total_fuel_cost)}</b></div>
+      <div class="stat"><span>Fuel cost</span><b>${usd(d.total_fuel_cost)}</b>${d.cost_is_complete ? '' : `<small>+ ${d.unpriced_gallons} gal unpriced</small>`}</div>
       <div class="stat"><span>Distance</span><b>${d.distance_miles.toLocaleString()} mi</b></div>
       <div class="stat"><span>Stops</span><b>${d.fuel_stops.length}</b></div>
       <div class="stat"><span>Saved vs naive</span><b>${d.savings_vs_naive === null ? '–' : usd(d.savings_vs_naive)}</b></div>
     </div>
-    <ol>${d.fuel_stops.map(s => `<li><span class="n">${s.stop}</span><b>${esc(s.name)}</b>
-      <small>${esc(s.city)}, ${esc(s.state)} · ${esc(s.address)} · mile ${s.mile_marker}</small>
-      <small>$${s.price_per_gallon}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b></small></li>`).join('')}</ol>
+    <ol>${d.fuel_stops.map(s => `<li><span class="n${s.listed ? '' : ' unlisted'}">${s.stop}</span><b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b>
+      <small>${where(s)} · mile ${s.mile_marker}</small>
+      <small>${bill(s)}</small></li>`).join('')}</ol>
     <p><small>${esc(d.meta.routing_provider)} · routing calls: ${d.meta.external_api_calls.routing} · ${d.meta.timings_ms.total} ms</small></p>`;
 }
 

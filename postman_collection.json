@@ -20,23 +20,32 @@
           "if (pm.response.code !== 200) {",
           "  pm.test('error has the documented shape', () => pm.expect(d.error).to.have.keys('code', 'message', 'details'));",
           "} else {",
-          "  pm.test('at most one routing call', () => pm.expect(d.meta.external_api_calls.routing).to.be.at.most(1));",
-          "  pm.test('total = sum of stop costs', () => {",
-          "    const sum = d.fuel_stops.reduce((a, s) => a + s.cost, 0);",
+          "  const detour = d.route_options.length > 1;",
+          "  pm.test(detour ? 'routing calls: at most 3 with a detour' : 'at most one routing call',",
+          "    () => pm.expect(d.meta.external_api_calls.routing).to.be.at.most(detour ? 3 : 1));",
+          "  pm.test('exactly one route option is selected', () => pm.expect(d.route_options.filter(o => o.selected).length).to.eql(1));",
+          "  pm.test('total = sum of listed stop costs', () => {",
+          "    const sum = d.fuel_stops.filter(s => s.listed).reduce((a, s) => a + s.cost, 0);",
           "    pm.expect(Math.abs(sum - d.total_fuel_cost)).to.be.below(0.005);",
           "  });",
           "  if (d.map && d.map.route) {",
           "    const tpl = `<link rel=\"stylesheet\" href=\"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css\"/>",
-          "<div style=\"font:14px system-ui;margin-bottom:6px\"><b>{{cost}}</b> of fuel \u00b7 {{miles}} mi \u00b7 {{n}} stops \u00b7 {{saved}} \u00b7 routing calls: {{calls}}</div>",
+          "<div style=\"font:14px system-ui;margin-bottom:6px\"><b>{{cost}}</b> of fuel · {{miles}} mi · {{n}} stops · {{saved}} · routing calls: {{calls}}</div>",
+          "{{#each options}}<div style=\"font:13px system-ui;margin-bottom:4px\">{{#if selected}}✅{{else}}⛔{{/if}} <b>{{name}}</b> · {{distance_miles}} mi · {{note}}</div>{{/each}}",
           "<div id=\"m\" style=\"height:520px\"></div>",
           "<script src=\"https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js\"></script>",
           "<script>pm.getData((e, d) => {",
           "  const map = L.map('m');",
           "  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution: '&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors'}).addTo(map);",
-          "  const line = L.geoJSON(d.route, {style: {color: '#1f6feb', weight: 5}}).addTo(map); map.fitBounds(line.getBounds());",
-          "  d.stops.forEach(s => L.marker([s.lat, s.lon]).bindTooltip(s.stop + '. ' + s.city + ', ' + s.state + ': $' + s.price_per_gallon + ' x ' + s.gallons + ' gal = $' + s.cost).addTo(map));",
+          "  d.options.filter(o => o.route).forEach(o => L.geoJSON(o.route, {style: {color: '#888', weight: 4, dashArray: '6 8'}}).bindTooltip(o.name + ': ' + o.note).addTo(map));",
+          "  d.options.filter(o => o.gap && o.gap.route).forEach(o => L.geoJSON(o.gap.route, {style: {color: '#d9480f', weight: 6}}).bindTooltip('No listed station for ' + o.gap.miles + ' mi').addTo(map));",
+          "  const line = L.geoJSON(d.route, {style: {color: '#1f6feb', weight: 5}}).addTo(map); map.fitBounds(line.getBounds().pad(0.1));",
+          "  d.stops.forEach(s => L.marker([s.lat, s.lon], {opacity: s.listed ? 1 : 0.6}).bindTooltip(s.listed",
+          "    ? s.stop + '. ' + s.city + ', ' + s.state + ': $' + s.price_per_gallon + ' x ' + s.gallons + ' gal = $' + s.cost",
+          "    : s.stop + '. Not in the price list: buy ' + s.gallons + ' gal at any station here (unpriced)').addTo(map));",
           "});</script>`;",
-          "    pm.visualizer.set(tpl, {route: d.map.route, stops: d.fuel_stops, n: d.fuel_stops.length, cost: '$' + d.total_fuel_cost,",
+          "    pm.visualizer.set(tpl, {route: d.map.route, stops: d.fuel_stops, options: d.route_options, n: d.fuel_stops.length,",
+          "      cost: '$' + d.total_fuel_cost + (d.cost_is_complete ? '' : ' + ' + d.unpriced_gallons + ' gal unpriced'),",
           "      miles: d.distance_miles, calls: d.meta.external_api_calls.routing,",
           "      saved: d.savings_vs_naive === null ? '' : '$' + d.savings_vs_naive + ' cheaper than refuelling blind'});",
           "  }",
@@ -106,10 +115,17 @@
       }
     },
     {
-      "name": "422: no fuel coverage (SF -> Seattle; California has 8 stations)",
+      "name": "Detour: SF -> Seattle (direct I-5 is out of range on listed stations)",
       "request": {
         "method": "GET",
         "url": "{{base_url}}/api/route?start=San Francisco, CA&finish=Seattle, WA"
+      }
+    },
+    {
+      "name": "No listed station near the start: San Diego -> Sacramento (fuel shown as unpriced)",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/route?start=San Diego, CA&finish=Sacramento, CA"
       }
     },
     {
