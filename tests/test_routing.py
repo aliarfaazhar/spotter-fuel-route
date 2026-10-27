@@ -54,6 +54,20 @@ def test_ors_request_and_lonlat_swap(ors_key):
     assert np.allclose(route.coords[:, 0], 41.0) and route.coords[:, 1].min() == pytest.approx(-96.0)
 
 
+def test_waypoints_are_sent_in_order(ors_key):
+    route_mock = respx.post(ORS_URL).mock(return_value=httpx.Response(200, json=ors_body()))
+    routing.fetch_route(START, END, via=((43.0, -90.0), (42.0, -93.0)))
+    body = json.loads(route_mock.calls.last.request.content)
+    assert body["coordinates"] == [[-87.6, 41.0], [-90.0, 43.0], [-93.0, 42.0], [-96.0, 41.0]]
+    assert body["radiuses"] == [-1] * 4
+
+
+def test_osrm_waypoints_in_the_url():
+    mock = respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
+    routing.fetch_route(START, END, via=((43.0, -90.0),))
+    assert mock.calls.last.request.url.path.endswith("/-87.6,41.0;-90.0,43.0;-96.0,41.0")
+
+
 def test_no_key_uses_osrm():
     respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
     route, calls = routing.fetch_route(START, END)

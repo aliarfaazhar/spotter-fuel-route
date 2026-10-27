@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 import httpx
+import numpy as np
 import pytest
 import respx
 
@@ -28,6 +29,8 @@ def test_plan_end_to_end(client, corridor, osrm):
     stops = body["fuel_stops"]
     assert stops, "an empty tank at the start means at least one purchase"
     assert [s["mile_marker"] for s in stops] == sorted(s["mile_marker"] for s in stops)
+    assert all(s["listed"] for s in stops) and body["cost_is_complete"] is True
+    assert body["route_options"][0]["selected"] and body["route_options"][0]["status"] == "ok"
     assert Decimal(str(body["total_fuel_cost"])) == sum(Decimal(str(s["cost"])) for s in stops)
     for s in stops:  # each stop's cost is exactly its gallons x the price shown, to the cent
         expected = (Decimal(str(s["gallons"])) * Decimal(str(s["price_per_gallon"]))).quantize(Decimal("0.01"))
@@ -97,19 +100,89 @@ def test_bad_input_is_a_400_with_one_error_shape(client, corridor, params, code)
     assert set(resp.json()["error"]) == {"code", "message", "details"}
 
 
-def test_coverage_gap_is_a_422_with_details(client, corridor):
-    from fuel.models import Station
+def test_gap_without_a_detour_is_planned_with_unlisted_fuel(client, corridor):
+    from fuel.models import Station, ZipCode
 
     Station.objects.filter(opis_id__in=[2, 3, 4]).delete()  # the last station is ~565 mi short of the finish
-    long = [[lon, 41.0] for lon in (-87.6, -96.0, -106.0)]
-    from fuel.models import ZipCode
-
     ZipCode.objects.create(code="80000", lat=41.0, lon=-106.0)
+    long = [[lon, 41.0] for lon in (-87.6, -96.0, -106.0)]
     respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body(long, meters=1_420_000)))
-    resp = get(client, start="Chicago, IL", finish="41.0,-106.0", start_fuel="0")
-    assert resp.status_code == 422, resp.json()
-    err = resp.json()["error"]
-    assert err["code"] == "no_fuel_coverage" and err["details"]["gap_miles"] > 0
+    resp = get(client, start="Chicago, IL", finish="41.0,-106.0")
+    assert resp.status_code == 200, resp.json()
+    body = resp.json()
+
+    direct = body["route_options"][0]
+    assert direct["selected"] and direct["status"] == "unlisted_fuel_needed" and direct["gap"]["miles"] > 500
+    unlisted = [s for s in body["fuel_stops"] if not s["listed"]]
+    assert unlisted and all(s["cost"] is None and s["price_per_gallon"] is None for s in unlisted)
+    assert body["cost_is_complete"] is False
+    assert body["unpriced_gallons"] == pytest.approx(sum(s["gallons"] for s in unlisted))
+    assert Decimal(str(body["total_fuel_cost"])) == sum(
+        Decimal(str(s["cost"])) for s in body["fuel_stops"] if s["listed"]
+    )
+    assert body["savings_vs_naive"] is None
+    assert any(w["code"] == "unlisted_fuel" for w in body["warnings"])
+
+
+@pytest.fixture
+def detour_world(db):
+    """Nothing listed along the straight line from Chicago to (41, -100); one listed town well north of it."""
+    from fuel.models import ZipCode
+    from tests.conftest import make_place, make_station
+
+    make_place("Chicago", "IL", 41.0, -87.6, population=2_700_000)
+    ZipCode.objects.create(code="60601", lat=41.0, lon=-87.62)
+    ZipCode.objects.create(code="69000", lat=41.0, lon=-100.0)
+    make_station(1, make_place("Startville", "IL", 41.02, -87.62), "3.50")
+    make_station(2, make_place("Northtown", "MN", 43.5, -94.0), "3.00")
+
+
+def detour_osrm(request):
+    """The direct route is a straight line; a request with a waypoint gets a line through it."""
+    pairs = request.url.path.rsplit("/", 1)[-1].split(";")
+    pts = [[float(v) for v in p.split(",")] for p in pairs]  # [lon, lat]
+    coords, miles = [], 0.0
+    from fuel.services.geometry import haversine_miles
+
+    for (lon0, lat0), (lon1, lat1) in zip(pts, pts[1:], strict=False):
+        coords += [
+            [float(lon), float(lat)]
+            for lon, lat in zip(np.linspace(lon0, lon1, 100), np.linspace(lat0, lat1, 100), strict=True)
+        ]
+        miles += float(haversine_miles(lat0, lon0, lat1, lon1))
+    return httpx.Response(200, json=osrm_body(coords, meters=miles * 1609.344))
+
+
+def test_gap_is_bridged_by_a_detour_through_listed_stations(client, detour_world):
+    mock = respx.get(url__startswith=OSRM_URL).mock(side_effect=detour_osrm)
+    resp = get(client, start="Chicago, IL", finish="41.0,-100.0")
+    assert resp.status_code == 200, resp.json()
+    body = resp.json()
+
+    direct, detour = body["route_options"]
+    assert direct["status"] == "out_of_range" and not direct["selected"]
+    assert direct["gap"]["miles"] > 500 and direct["gap"]["route"]["type"] == "LineString"
+    assert direct["route"]["type"] == "LineString"  # drawn on the map next to the chosen route
+    assert detour["selected"] and detour["status"] == "ok" and detour["via"] == ["Northtown, MN"]
+    assert detour["extra_miles"] > 0 and body["distance_miles"] == detour["distance_miles"]
+    assert [s["city"] for s in body["fuel_stops"]] == ["Startville", "Northtown"]
+    assert body["cost_is_complete"] is True
+    assert any(w["code"] == "detour_for_fuel_coverage" for w in body["warnings"])
+    assert body["meta"]["external_api_calls"]["routing"] == 2
+
+    again = get(client, start="Chicago, IL", finish="41.0,-100.0").json()
+    assert again["meta"]["external_api_calls"]["routing"] == 0 and mock.call_count == 2
+
+
+def test_no_station_near_the_start_buys_only_what_it_must_off_the_list(client, corridor, osrm):
+    from fuel.models import Station
+
+    Station.objects.filter(opis_id=1).delete()  # the next listed station is ~98 mi down the road
+    body = get(client, start="Chicago, IL", finish="Omaha, NE").json()
+    first = body["fuel_stops"][0]
+    assert not first["listed"] and first["mile_marker"] == 0
+    assert 9 < first["gallons"] < 11  # just enough to reach the first listed station
+    assert body["cost_is_complete"] is False and body["unpriced_gallons"] == first["gallons"]
 
 
 def test_routing_outage_is_a_502(client, corridor):

@@ -84,17 +84,26 @@ class RouteMatches:
     off_route_miles: np.ndarray
 
 
+def resample(route: Route, spacing: float = ROUTE_SAMPLE_SPACING_MILES) -> tuple[np.ndarray, np.ndarray]:
+    """Points every `spacing` miles along the route: (mile markers, (N, 2) lat/lon).
+
+    Interpolates along the full-resolution line, scaled to the router's own distance. Interpolating (not picking
+    vertices) matters: straight highway stretches can have vertices miles apart, which would otherwise shift a
+    station's mile marker by that much.
+    """
+    cum = cumulative_miles(route.coords, route.distance_miles)
+    miles = np.append(np.arange(0.0, cum[-1], spacing), cum[-1])
+    return miles, np.column_stack(
+        [np.interp(miles, cum, route.coords[:, 0]), np.interp(miles, cum, route.coords[:, 1])]
+    )
+
+
 def match_route(route: Route, index: StationIndex, max_buffer_miles: float) -> RouteMatches:
     empty = RouteMatches(np.empty(0, int), np.empty(0), np.empty(0))
     if len(route.coords) < 2 or len(index) == 0:
         return empty
 
-    # Resample at a fixed spacing by interpolating along the full-resolution line, scaled to the router's own
-    # distance. Interpolating (not picking vertices) matters: straight highway stretches can have vertices
-    # miles apart, which would otherwise shift a station's mile marker by that much.
-    cum = cumulative_miles(route.coords, route.distance_miles)
-    pts_mile = np.append(np.arange(0.0, cum[-1], ROUTE_SAMPLE_SPACING_MILES), cum[-1])
-    pts = np.column_stack([np.interp(pts_mile, cum, route.coords[:, 0]), np.interp(pts_mile, cum, route.coords[:, 1])])
+    pts_mile, pts = resample(route)
 
     # Cheap bounding-box prefilter before the tree query.
     pad_lat = max_buffer_miles / 69.0

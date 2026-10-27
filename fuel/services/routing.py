@@ -71,12 +71,12 @@ def _route(coordinates, meters, seconds, provider: str) -> Route:
     return Route(coords=arr[:, ::-1].copy(), distance_miles=distance, duration_hours=duration, provider=provider)
 
 
-def _ors(start: tuple[float, float], end: tuple[float, float]) -> Route:
+def _ors(points: list[tuple[float, float]]) -> Route:
     cfg = settings.ROUTING
     profile = cfg["ORS_PROFILE"]
     body = {
-        "coordinates": [[start[1], start[0]], [end[1], end[0]]],
-        "radiuses": [-1, -1],  # snap to the nearest road however far: default 350 m rejects some city points
+        "coordinates": [[lon, lat] for lat, lon in points],
+        "radiuses": [-1] * len(points),  # snap to the nearest road however far: default 350 m rejects some city points
         "instructions": False,
         "elevation": False,
         # never send "options" with driving-hgv: it switches ORS to a 100 km dynamic-weights limit
@@ -113,9 +113,9 @@ def _ors(start: tuple[float, float], end: tuple[float, float]) -> Route:
         raise RoutingError("OpenRouteService returned a malformed route") from exc
 
 
-def _osrm(start: tuple[float, float], end: tuple[float, float]) -> Route:
+def _osrm(points: list[tuple[float, float]]) -> Route:
     base = settings.ROUTING["OSRM_BASE_URL"]
-    url = f"{base}/route/v1/driving/{start[1]},{start[0]};{end[1]},{end[0]}"
+    url = f"{base}/route/v1/driving/" + ";".join(f"{lon},{lat}" for lat, lon in points)
     try:
         with _client(settings.ROUTING["OSRM_READ_TIMEOUT"]) as client:
             resp = client.get(url, params={"overview": "full", "geometries": "geojson"})
@@ -137,15 +137,18 @@ def _osrm(start: tuple[float, float], end: tuple[float, float]) -> Route:
         raise RoutingError("OSRM returned a malformed route") from exc
 
 
-def fetch_route(start: tuple[float, float], end: tuple[float, float]) -> tuple[Route, int]:
-    """Return the route and how many routing-API calls it took (1, or 2 when falling back)."""
+def fetch_route(
+    start: tuple[float, float], end: tuple[float, float], via: tuple[tuple[float, float], ...] = ()
+) -> tuple[Route, int]:
+    """Return the route (through `via` in order) and how many routing-API calls it took (1, or 2 when falling back)."""
+    points = [start, *via, end]
     if not settings.ROUTING["ORS_API_KEY"]:
-        return _osrm(start, end), 1
+        return _osrm(points), 1
     try:
-        return _ors(start, end), 1
+        return _ors(points), 1
     except ProviderDown as exc:
         log.warning("ORS failed (%s); falling back to OSRM", exc)
-        return _osrm(start, end), 2
+        return _osrm(points), 2
 
 
 def provider_name() -> str:

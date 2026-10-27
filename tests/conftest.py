@@ -5,7 +5,7 @@ import respx
 from django.core.cache import cache
 
 from fuel.models import Place, Station, StationPrice, ZipCode
-from fuel.services import resolver, stations
+from fuel.services import detour, resolver, stations
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +15,7 @@ def _isolated(settings, request):
     cache.clear()
     settings.ROUTING = {**settings.ROUTING, "ORS_API_KEY": ""}
     stations.reset_index()
+    detour.reset()
     resolver._zip_tree = None
     if request.node.get_closest_marker("live"):
         if not os.environ.get("RUN_LIVE"):
@@ -24,6 +25,7 @@ def _isolated(settings, request):
     with respx.mock:  # the global router, so tests can register routes with respx.get(...)
         yield
     stations.reset_index()
+    detour.reset()
     resolver._zip_tree = None
 
 
