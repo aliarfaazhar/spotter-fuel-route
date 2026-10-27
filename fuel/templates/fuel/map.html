@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fuel Route Planner</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer">
   <style>
     :root { --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e4e4df; --accent:#1f6feb; --stop:#d9480f; }
     @media (prefers-color-scheme: dark) { :root { --bg:#141413; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94; --line:#33332f; --accent:#58a6ff; --stop:#ff8a4c; } }
@@ -44,11 +44,11 @@
   <div id="out"></div>
 </aside>
 <div id="map"></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 const map = L.map('map').setView([39.5, -98.35], 4);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 18, attribution: '&copy; OpenStreetMap contributors'
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
 }).addTo(map);
 const layer = L.layerGroup().addTo(map);
 const form = document.getElementById('f'), out = document.getElementById('out');
@@ -59,17 +59,25 @@ const params = new URLSearchParams(location.search);
 for (const k of ['start', 'finish', 'start_fuel']) if (params.get(k)) form.elements[k].value = params.get(k);
 
 async function plan() {
-  const q = new URLSearchParams(new FormData(form)); q.set('include', 'route');
-  history.replaceState(null, '', '?' + new URLSearchParams([...q].filter(([k]) => k !== 'include')));
+  const q = new URLSearchParams(new FormData(form));
+  history.replaceState(null, '', '?' + q);
   out.innerHTML = '<p>Planning…</p>'; layer.clearLayers();
-  const res = await fetch('/api/route?' + q);
-  const data = await res.json();
-  if (!res.ok) { out.innerHTML = `<div class="msg"><b>${esc(data.error.code)}</b><br>${esc(data.error.message)}</div>`; return; }
+  let res, data;
+  try {
+    res = await fetch('/api/route?' + q);
+    data = await res.json();
+  } catch (e) {
+    out.innerHTML = '<div class="msg">The server could not be reached or returned an unexpected response.</div>'; return;
+  }
+  if (!res.ok) {
+    const err = data.error || {code: res.status, message: 'request failed'};
+    out.innerHTML = `<div class="msg"><b>${esc(err.code)}</b><br>${esc(err.message)}</div>`; return;
+  }
   render(data);
 }
 
 function render(d) {
-  const line = L.geoJSON(d.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--accent'), weight: 5, opacity: .85}}).addTo(layer);
+  const line = L.geoJSON(d.map.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--accent'), weight: 5, opacity: .85}}).addTo(layer);
   L.marker([d.start.lat, d.start.lon]).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
   L.marker([d.finish.lat, d.finish.lon]).bindPopup('<b>Finish</b><br>' + esc(d.finish.label)).addTo(layer);
   d.fuel_stops.forEach(s => L.marker([s.lat, s.lon], {icon: L.divIcon({className: '', html: `<div class="pin">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]})})
@@ -84,9 +92,9 @@ function render(d) {
       <div class="stat"><span>Saved vs naive</span><b>${d.savings_vs_naive === null ? '–' : usd(d.savings_vs_naive)}</b></div>
     </div>
     <ol>${d.fuel_stops.map(s => `<li><span class="n">${s.stop}</span><b>${esc(s.name)}</b>
-      <small>${esc(s.city)}, ${esc(s.state)} · ${esc(s.highway || '')}${s.exit ? ' exit ' + esc(s.exit) : ''} · mile ${s.mile_marker}</small>
+      <small>${esc(s.city)}, ${esc(s.state)} · ${esc(s.address)} · mile ${s.mile_marker}</small>
       <small>$${s.price_per_gallon}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b></small></li>`).join('')}</ol>
-    <p><small>${esc(d.routing_provider)} · routing calls: ${d.external_api_calls.routing} · ${d.timings_ms.total} ms · <a href="${esc(d.google_maps_url)}" target="_blank" rel="noopener">Open in Google Maps</a></small></p>`;
+    <p><small>${esc(d.meta.routing_provider)} · routing calls: ${d.meta.external_api_calls.routing} · ${d.meta.timings_ms.total} ms</small></p>`;
 }
 
 form.addEventListener('submit', e => { e.preventDefault(); plan(); });
