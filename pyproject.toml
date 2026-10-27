@@ -1,0 +1,18 @@
+[project]
+name = "spotter-fuel-route"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+python_files = ["test_*.py"]
+addopts = "-q --no-migrations"
+markers = ["live: hits real external APIs (run with RUN_LIVE=1)"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["fuel/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "DJ"]
