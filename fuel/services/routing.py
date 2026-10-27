@@ -45,7 +45,9 @@ class ProviderDown(RoutingError):
 
 def _client(read_timeout: float) -> httpx.Client:
     timeout = httpx.Timeout(read_timeout, connect=settings.ROUTING["CONNECT_TIMEOUT"])
-    return httpx.Client(timeout=timeout, headers={"User-Agent": "spotter-fuel-route/1.0"})
+    # retries=1 covers connection failures only (the request never reached the server), never a sent request.
+    transport = httpx.HTTPTransport(retries=1)
+    return httpx.Client(timeout=timeout, transport=transport, headers={"User-Agent": "spotter-fuel-route/1.0"})
 
 
 def _json(resp: httpx.Response, provider: str) -> dict:
