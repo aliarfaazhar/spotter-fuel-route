@@ -38,12 +38,13 @@
 <aside>
   <h1>Fuel Route Planner</h1>
   <form id="f">
-    <label>Start <input name="start" required placeholder="Chicago, IL · 60601 · 41.88,-87.63"></label>
-    <label>Finish <input name="finish" required placeholder="Houston, TX"></label>
+    <label>Start <input name="start" required list="places" autocomplete="off" placeholder="Chicago, IL · 60601 · 41.88,-87.63"></label>
+    <label>Finish <input name="finish" required list="places" autocomplete="off" placeholder="Houston, TX"></label>
     <label>Tank at start
       <select name="start_fuel"><option value="empty">Empty (buy near the start)</option><option value="full">Full (500 mi)</option></select>
     </label>
     <button>Plan route</button>
+    <datalist id="places"></datalist>
   </form>
   <div id="out"></div>
 </aside>
@@ -113,6 +114,23 @@ function render(d) {
       <small>${bill(s)}</small></li>`).join('')}</ol>
     <p><small>${esc(d.meta.routing_provider)} · routing calls: ${d.meta.external_api_calls.routing} · ${d.meta.timings_ms.total} ms</small></p>`;
 }
+
+// Autocomplete from the offline place list (/api/places), debounced as you type.
+const places = document.getElementById('places');
+let suggestTimer, suggestSeq = 0;
+for (const name of ['start', 'finish']) form.elements[name].addEventListener('input', e => {
+  clearTimeout(suggestTimer);
+  const q = e.target.value.trim();
+  if (q.length < 2 || /^[\d\s,.-]+$/.test(q)) { places.innerHTML = ''; return; }  // ZIPs and lat,lon need no help
+  suggestTimer = setTimeout(async () => {
+    const seq = ++suggestSeq;
+    try {
+      const res = await fetch('/api/places?q=' + encodeURIComponent(q));
+      if (!res.ok || seq !== suggestSeq) return;
+      places.innerHTML = (await res.json()).results.map(p => `<option value="${esc(p)}">`).join('');
+    } catch (err) { /* suggestions are optional */ }
+  }, 150);
+});
 
 form.addEventListener('submit', e => { e.preventDefault(); plan(); });
 if (form.elements.start.value && form.elements.finish.value) plan();

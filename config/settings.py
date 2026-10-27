@@ -113,7 +113,7 @@ REST_FRAMEWORK = {
     + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
     # Every new route can cost calls to free third-party APIs; keep one client from burning through them.
     "DEFAULT_THROTTLE_CLASSES": ["fuel.throttling.AnonRateThrottleFailOpen"],
-    "DEFAULT_THROTTLE_RATES": {"anon": os.environ.get("API_RATE_LIMIT", "60/min")},
+    "DEFAULT_THROTTLE_RATES": {"anon": os.environ.get("API_RATE_LIMIT", "60/min"), "suggest": "600/min"},
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": [],
     "UNAUTHENTICATED_USER": None,

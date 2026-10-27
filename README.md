@@ -79,6 +79,8 @@ Response, trimmed:
 }
 ```
 
+`GET /api/places?q=chic` returns up to 8 place names for autocomplete (`["Chicago, IL", "Chico, CA", ...]`), biggest first. It's offline, from the same place data, and every suggestion is accepted by `/api/route` as-is. The map page uses it for both inputs.
+
 Errors all have the shape `{"error": {"code", "message", "details"}}`:
 - **400:** bad, ambiguous or non-US input.
 - **422:** there's no drivable route between the two points.

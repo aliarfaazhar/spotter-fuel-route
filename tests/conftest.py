@@ -5,7 +5,7 @@ import respx
 from django.core.cache import cache
 
 from fuel.models import Place, Station, StationPrice, ZipCode
-from fuel.services import detour, resolver, stations
+from fuel.services import detour, resolver, stations, suggest
 
 
 @pytest.fixture(autouse=True)
@@ -16,6 +16,7 @@ def _isolated(settings, request):
     settings.ROUTING = {**settings.ROUTING, "ORS_API_KEY": ""}
     stations.reset_index()
     detour.reset()
+    suggest.reset()
     resolver._zip_tree = None
     if request.node.get_closest_marker("live"):
         if not os.environ.get("RUN_LIVE"):
@@ -26,6 +27,7 @@ def _isolated(settings, request):
         yield
     stations.reset_index()
     detour.reset()
+    suggest.reset()
     resolver._zip_tree = None
 
 

@@ -14,3 +14,9 @@ class AnonRateThrottleFailOpen(AnonRateThrottle):
         except Exception:
             log.warning("throttle cache unavailable; allowing request", exc_info=True)
             return True
+
+
+class SuggestThrottle(AnonRateThrottleFailOpen):
+    """Autocomplete fires as people type, so it gets its own, higher limit."""
+
+    scope = "suggest"

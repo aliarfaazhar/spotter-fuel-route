@@ -7,6 +7,8 @@ from rest_framework.views import APIView
 
 from fuel.serializers import RouteQuerySerializer
 from fuel.services.planner import plan_trip
+from fuel.services.suggest import suggest
+from fuel.throttling import SuggestThrottle
 
 
 class RoutePlanView(APIView):
@@ -37,6 +39,15 @@ class RoutePlanView(APIView):
             map_base_url=request.build_absolute_uri(reverse("route-map")),
         )
         return Response(plan)
+
+
+class PlaceSuggestView(APIView):
+    """Autocomplete: GET /api/places?q=chic -> {"results": ["Chicago, IL", "Chicopee, MA", ...]}. Offline."""
+
+    throttle_classes = [SuggestThrottle]
+
+    def get(self, request: Request) -> Response:
+        return Response({"results": suggest(request.query_params.get("q", "")[:100])})
 
 
 def route_map(request):

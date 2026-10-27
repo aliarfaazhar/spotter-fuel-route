@@ -19,6 +19,8 @@
           "const d = pm.response.json();",
           "if (pm.response.code !== 200) {",
           "  pm.test('error has the documented shape', () => pm.expect(d.error).to.have.keys('code', 'message', 'details'));",
+          "} else if (d.results) {",
+          "  pm.test('autocomplete returns a list of place names', () => pm.expect(d.results).to.be.an('array'));",
           "} else {",
           "  const detour = d.route_options.length > 1;",
           "  pm.test(detour ? 'routing calls: at most 3 with a detour' : 'at most one routing call',",
@@ -140,6 +142,13 @@
       "request": {
         "method": "GET",
         "url": "{{base_url}}/api/route?start=Springfield&finish=Chicago, IL"
+      }
+    },
+    {
+      "name": "Autocomplete: /api/places?q=san f (offline, no external call)",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/places?q=san f"
       }
     }
   ]
