@@ -6,11 +6,13 @@ services:
       DATABASE_URL: postgres://fuel:fuel@db:5432/fuel
       REDIS_URL: redis://redis:6379/0
       DJANGO_DEBUG: "false"
+      # Local demo only. Set your own DJANGO_SECRET_KEY for anything public.
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-compose-demo-key-not-for-production}
       DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
       ORS_API_KEY: ${ORS_API_KEY:-}
     depends_on:
       db: { condition: service_healthy }
-      redis: { condition: service_started }
+      redis: { condition: service_healthy }
 
   db:
     image: postgres:17-alpine
@@ -23,6 +25,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
 
 volumes:
   pgdata:

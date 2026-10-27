@@ -1,9 +1,12 @@
 PY := .venv/bin/python
 
-.PHONY: setup run test lint docker live
-setup:  ## create the venv, install deps, build the DB (SQLite) from the committed data
-	uv venv --python 3.12 .venv 2>/dev/null || python3.12 -m venv .venv
-	uv pip install --python $(PY) -r requirements-dev.txt 2>/dev/null || $(PY) -m pip install -r requirements-dev.txt
+.PHONY: setup run test lint live docker
+
+setup:  ## Python >= 3.12: venv, dependencies, .env, database (SQLite) loaded from the committed data
+	@command -v uv >/dev/null && uv venv --python 3.12 .venv || python3 -m venv .venv
+	@$(PY) -c 'import sys; assert sys.version_info >= (3, 12), "Python 3.12+ is required (Django 6.1)"'
+	@command -v uv >/dev/null && uv pip install --python $(PY) -r requirements-dev.txt || $(PY) -m pip install -r requirements-dev.txt
+	@test -f .env || cp .env.example .env
 	$(PY) manage.py migrate
 
 run:
