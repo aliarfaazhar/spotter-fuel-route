@@ -18,13 +18,21 @@ def line(start=START, end=END, n=200):
 
 
 def ors_body(coords=None, meters=708_000.0):
-    return {"features": [{"geometry": {"coordinates": coords or line()},
-                          "properties": {"summary": {"distance": meters, "duration": 25_000.0}}}]}  # fmt: skip
+    return {
+        "features": [
+            {
+                "geometry": {"coordinates": coords or line()},
+                "properties": {"summary": {"distance": meters, "duration": 25_000.0}},
+            }
+        ]
+    }
 
 
 def osrm_body(coords=None, meters=708_000.0):
-    return {"code": "Ok", "routes": [{"geometry": {"coordinates": coords or line()}, "distance": meters,
-                                      "duration": 25_000.0}]}  # fmt: skip
+    return {
+        "code": "Ok",
+        "routes": [{"geometry": {"coordinates": coords or line()}, "distance": meters, "duration": 25_000.0}],
+    }
 
 
 @pytest.fixture
@@ -83,3 +91,20 @@ def test_timeout_without_fallback_is_unavailable():
 def test_live_osrm():
     route, _ = routing.fetch_route((41.8781, -87.6298), (41.2565, -95.9345))
     assert 450 < route.distance_miles < 500
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(403, text="<html>blocked</html>"),
+        httpx.Response(
+            200, json={"code": "Ok", "routes": [{"geometry": {"coordinates": []}, "distance": 1, "duration": 1}]}
+        ),
+        httpx.Response(200, json={"code": "Ok", "routes": [{}]}),
+        httpx.Response(200, text="not json"),
+    ],
+)
+def test_malformed_provider_responses_are_routing_errors(response):
+    respx.get(url__startswith=OSRM_URL).mock(return_value=response)
+    with pytest.raises(routing.RoutingError):
+        routing.fetch_route(START, END)

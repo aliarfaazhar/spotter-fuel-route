@@ -43,15 +43,32 @@ class ProviderDown(RoutingError):
     """Network error, timeout or 5xx: worth one fallback attempt."""
 
 
-def _client() -> httpx.Client:
-    cfg = settings.ROUTING
-    timeout = httpx.Timeout(cfg["READ_TIMEOUT"], connect=cfg["CONNECT_TIMEOUT"])
+def _client(read_timeout: float) -> httpx.Client:
+    timeout = httpx.Timeout(read_timeout, connect=settings.ROUTING["CONNECT_TIMEOUT"])
     return httpx.Client(timeout=timeout, headers={"User-Agent": "spotter-fuel-route/1.0"})
 
 
-def _lonlat_to_latlon(coordinates) -> np.ndarray:
-    arr = np.asarray(coordinates, dtype=float)[:, :2]
-    return arr[:, ::-1].copy()
+def _json(resp: httpx.Response, provider: str) -> dict:
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        raise RoutingError(f"{provider} returned an unexpected response (HTTP {resp.status_code})")
+    return payload
+
+
+def _route(coordinates, meters, seconds, provider: str) -> Route:
+    """Validate a provider's geometry ([lon, lat] pairs) and convert it to (lat, lon)."""
+    try:
+        arr = np.asarray(coordinates, dtype=float)[:, :2]
+        distance = float(meters) / METERS_PER_MILE
+        duration = float(seconds) / 3600.0
+    except (TypeError, ValueError, IndexError) as exc:
+        raise RoutingError(f"{provider} returned a malformed route") from exc
+    if len(arr) < 2 or not np.isfinite(arr).all():
+        raise RoutingError(f"{provider} returned a route without geometry")
+    return Route(coords=arr[:, ::-1].copy(), distance_miles=distance, duration_hours=duration, provider=provider)
 
 
 def _ors(start: tuple[float, float], end: tuple[float, float]) -> Route:
@@ -65,7 +82,7 @@ def _ors(start: tuple[float, float], end: tuple[float, float]) -> Route:
         # never send "options" with driving-hgv: it switches ORS to a 100 km dynamic-weights limit
     }
     try:
-        with _client() as client:
+        with _client(cfg["ORS_READ_TIMEOUT"]) as client:
             resp = client.post(
                 f"{cfg['ORS_BASE_URL']}/v2/directions/{profile}/geojson",
                 json=body,
@@ -78,30 +95,29 @@ def _ors(start: tuple[float, float], end: tuple[float, float]) -> Route:
         raise RateLimited("OpenRouteService rate limit reached, retry shortly")
     if resp.status_code >= 500:
         raise ProviderDown(f"OpenRouteService returned {resp.status_code}")
-    payload = resp.json() if resp.headers.get("content-type", "").startswith("application") else {}
+    if resp.status_code in (401, 403):
+        raise RoutingError("OpenRouteService rejected the API key")
+    payload = _json(resp, "OpenRouteService")
     if resp.status_code != 200:
-        err = payload.get("error", {}) if isinstance(payload.get("error"), dict) else {}
+        err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
         if err.get("code") in (2004, 2009, 2010) or resp.status_code == 404:
             raise NoRoute(f"no drivable route between these points ({err.get('message', resp.status_code)})")
-        if resp.status_code in (401, 403):
-            raise RoutingError("OpenRouteService rejected the API key")
         raise RoutingError(f"OpenRouteService error {resp.status_code}")
 
-    feature = payload["features"][0]
-    summary = feature["properties"].get("summary", {})
-    return Route(
-        coords=_lonlat_to_latlon(feature["geometry"]["coordinates"]),
-        distance_miles=summary.get("distance", 0.0) / METERS_PER_MILE,
-        duration_hours=summary.get("duration", 0.0) / 3600.0,
-        provider=f"openrouteservice:{profile}",
-    )
+    provider = f"openrouteservice:{profile}"
+    try:
+        feature = payload["features"][0]
+        summary = feature["properties"]["summary"]
+        return _route(feature["geometry"]["coordinates"], summary["distance"], summary["duration"], provider)
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RoutingError("OpenRouteService returned a malformed route") from exc
 
 
 def _osrm(start: tuple[float, float], end: tuple[float, float]) -> Route:
     base = settings.ROUTING["OSRM_BASE_URL"]
     url = f"{base}/route/v1/driving/{start[1]},{start[0]};{end[1]},{end[0]}"
     try:
-        with _client() as client:
+        with _client(settings.ROUTING["OSRM_READ_TIMEOUT"]) as client:
             resp = client.get(url, params={"overview": "full", "geometries": "geojson"})
     except httpx.HTTPError as exc:
         raise ProviderDown(f"OSRM unreachable: {type(exc).__name__}") from exc
@@ -109,18 +125,16 @@ def _osrm(start: tuple[float, float], end: tuple[float, float]) -> Route:
         raise RateLimited("OSRM rate limit reached, retry shortly")
     if resp.status_code >= 500:
         raise ProviderDown(f"OSRM returned {resp.status_code}")
-    payload = resp.json()
+    payload = _json(resp, "OSRM")
     if payload.get("code") != "Ok" or not payload.get("routes"):
         if payload.get("code") in ("NoRoute", "NoSegment", "InvalidValue"):
             raise NoRoute(f"no drivable route between these points ({payload.get('code')})")
         raise RoutingError(f"OSRM error: {payload.get('code', resp.status_code)}")
-    route = payload["routes"][0]
-    return Route(
-        coords=_lonlat_to_latlon(route["geometry"]["coordinates"]),
-        distance_miles=route["distance"] / METERS_PER_MILE,
-        duration_hours=route["duration"] / 3600.0,
-        provider="osrm:driving",
-    )
+    try:
+        route = payload["routes"][0]
+        return _route(route["geometry"]["coordinates"], route["distance"], route["duration"], "osrm:driving")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RoutingError("OSRM returned a malformed route") from exc
 
 
 def fetch_route(start: tuple[float, float], end: tuple[float, float]) -> tuple[Route, int]:

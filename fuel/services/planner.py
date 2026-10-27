@@ -15,19 +15,14 @@ from fuel.models import Station
 
 from . import routing
 from .geometry import haversine_miles, simplify
-from .optimizer import (
-    Candidate,
-    InfeasibleRoute,
-    cost_of,
-    naive_plan,
-    plan_fuel_stops,
-    plan_fuel_stops_with_stop_cost,
-)
+from .optimizer import Candidate, InfeasibleRoute, Purchase, naive_plan, plan_fuel_stops
 from .resolver import Point, resolve
-from .stations import RouteMatches, get_index, match_route
+from .stations import RouteMatches, StationIndex, get_index, match_route
 
 log = logging.getLogger("fuel.planner")
 CENT = Decimal("0.01")
+GALLON = Decimal("0.001")
+ORIGIN_RADII_MILES = (10.0, 25.0)
 
 
 class PlanError(Exception):
@@ -38,56 +33,73 @@ class PlanError(Exception):
 
 @dataclass(frozen=True)
 class StartFuel:
+    """`empty`: the truck fills up at a station near the start before leaving. Otherwise miles already in the tank."""
+
     mode: str  # "empty" | "full" | "miles"
     miles: float
 
-    @classmethod
-    def parse(cls, value, tank: float) -> "StartFuel":
-        text = str(value if value is not None else "empty").strip().lower()
-        if text in ("", "empty"):
-            return cls("empty", 0.0)
-        if text == "full":
-            return cls("full", tank)
-        try:
-            miles = float(text)
-        except ValueError:
-            raise PlanError(400, "invalid_start_fuel", "start_fuel must be 'empty', 'full' or miles of range") from None
-        if not 0 <= miles <= tank:
-            raise PlanError(400, "invalid_start_fuel", f"start_fuel must be between 0 and {tank:g} miles")
-        return cls("miles", miles)
 
-
-def _route_cache_key(start: Point, end: Point) -> str:
-    cfg = settings.FUEL
+def _route_cache_key(start: Point, end: Point, provider: str) -> str:
     coords = ":".join(f"{v:.5f}" for v in (*start.as_tuple(), *end.as_tuple()))
-    return f"route:v{cfg['ROUTE_CACHE_VERSION']}:{routing.provider_name()}:{coords}"
+    return f"route:v{settings.FUEL['ROUTE_CACHE_VERSION']}:{provider}:{coords}"
 
 
 def get_route(start: Point, end: Point) -> tuple[routing.Route, int, bool]:
-    key = _route_cache_key(start, end)
-    cached = cache.get(key)
+    """Cached route lookup. A cache outage degrades to an uncached call instead of failing the request."""
+    preferred = routing.provider_name()
+    key = _route_cache_key(start, end, preferred)
+    try:
+        cached = cache.get(key)
+    except Exception:
+        log.warning("route cache unavailable; continuing uncached", exc_info=True)
+        cached = None
     if cached is not None:
         return cached, 0, True
+
     route, calls = routing.fetch_route(start.as_tuple(), end.as_tuple())
-    cache.set(key, route, settings.FUEL["ROUTE_CACHE_TTL_SECONDS"])
-    return route, calls, False
+    # Cache a simplified line (~20 m tolerance): matching resamples every half mile, so nothing is lost.
+    stored = routing.Route(
+        coords=simplify(route.coords, tolerance_deg=0.0002),
+        distance_miles=route.distance_miles,
+        duration_hours=route.duration_hours,
+        provider=route.provider,
+    )
+    ttl = settings.FUEL["ROUTE_CACHE_TTL_SECONDS"]
+    if route.provider != preferred:  # a fallback route: don't let it stand in for the preferred one for long
+        ttl = settings.FUEL["FALLBACK_ROUTE_CACHE_TTL_SECONDS"]
+    try:
+        cache.set(key, stored, ttl)
+    except Exception:
+        log.warning("route cache unavailable; not caching", exc_info=True)
+    return stored, calls, False
 
 
 def _money(value: Decimal) -> Decimal:
-    return value.quantize(CENT, rounding=ROUND_HALF_UP)
+    return value.quantize(CENT, rounding=ROUND_HALF_UP) + 0  # "+ 0" turns -0.00 into 0.00
 
 
-def plan_trip(start_text: str, finish_text: str, start_fuel=None, stop_cost=None, include_route: bool = False,
-              map_base_url: str = "") -> dict:  # fmt: skip
+def _bill(purchases: list[Purchase], mpg: float) -> list[tuple[Purchase, Decimal, Decimal]]:
+    """(purchase, gallons, cost) with gallons rounded to 3 dp and each stop's cost rounded to the cent."""
+    out = []
+    for p in purchases:
+        gallons = (Decimal(repr(p.miles)) / Decimal(repr(mpg))).quantize(GALLON, rounding=ROUND_HALF_UP)
+        out.append((p, gallons, _money(gallons * Decimal(repr(p.candidate.price)))))
+    return out
+
+
+def plan_trip(
+    start_text: str,
+    finish_text: str,
+    start_fuel: StartFuel,
+    stop_cost: float,
+    include_route: bool = True,
+    map_base_url: str = "",
+) -> dict:
     cfg = settings.FUEL
     tank, mpg = cfg["VEHICLE_RANGE_MILES"], cfg["MILES_PER_GALLON"]
-    stop_cost = cfg["STOP_COST_USD"] if stop_cost is None else float(stop_cost)
-    if not 0 <= stop_cost <= 1000:
-        raise PlanError(400, "invalid_stop_cost", "stop_cost must be between 0 and 1000 USD")
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
 
-    fuel = StartFuel.parse(start_fuel, tank)
     start, start_calls = resolve(start_text)
     finish, finish_calls = resolve(finish_text)
     timings["resolve"] = time.perf_counter() - t0
@@ -98,28 +110,15 @@ def plan_trip(start_text: str, finish_text: str, start_fuel=None, stop_cost=None
         raise PlanError(400, "same_location", "start and finish are the same place")
 
     t = time.perf_counter()
-    route, routing_calls, cache_hit = get_route(start, finish)
-    calls["routing"] = routing_calls
+    route, calls["routing"], cache_hit = get_route(start, finish)
     timings["routing"] = time.perf_counter() - t
 
     t = time.perf_counter()
     index = get_index()
     buffers = cfg["BUFFER_STEPS_MILES"]
     matches = match_route(route, index, max(buffers))
-
-    origin = None
-    if fuel.mode == "empty":
-        near_idx, near_dist = index.within(start.lat, start.lon, cfg["ORIGIN_STATION_RADIUS_MILES"])
-        if near_idx.size:
-            best = int(near_idx[np.argmin(index.price[near_idx])])
-            origin = (best, float(near_dist[near_idx == best][0]))
-        else:
-            fuel = StartFuel("full", tank)
-            warnings.append({
-                "code": "no_station_near_start",
-                "message": f"no station within {cfg['ORIGIN_STATION_RADIUS_MILES']:g} mi of the start; "
-                           "assumed the vehicle leaves with a full tank",
-            })  # fmt: skip
+    origin = _origin_station(index, start, start_fuel, warnings, tank)
+    fuel_miles = 0.0 if origin is not None else (tank if start_fuel.mode == "empty" else start_fuel.miles)
     timings["match"] = time.perf_counter() - t
 
     t = time.perf_counter()
@@ -127,9 +126,7 @@ def plan_trip(start_text: str, finish_text: str, start_fuel=None, stop_cost=None
     for buffer in buffers:
         candidates = _candidates(matches, index, buffer, origin)
         try:
-            purchases = plan_fuel_stops_with_stop_cost(
-                candidates, route.distance_miles, tank, fuel.miles, mpg, stop_cost
-            )
+            purchases = plan_fuel_stops(candidates, route.distance_miles, tank, fuel_miles, mpg, stop_cost)
             buffer_used = buffer
             break
         except InfeasibleRoute as exc:
@@ -139,33 +136,39 @@ def plan_trip(start_text: str, finish_text: str, start_fuel=None, stop_cost=None
             422,
             "no_fuel_coverage",
             f"the fuel price list has no station to cover part of this route: {infeasible}",
-            {"stranded_at_mile": round(infeasible.stranded_at_mile, 1),
-             "next_station_mile": round(infeasible.next_point_mile, 1),
-             "gap_miles": round(infeasible.gap_miles, 1),
-             "route_miles": round(route.distance_miles, 1), "search_buffer_miles": max(buffers)},
-        )  # fmt: skip
+            {
+                "last_reachable_station_mile": round(infeasible.stranded_at_mile, 1),
+                "next_station_mile": round(infeasible.next_point_mile, 1),
+                "gap_miles": round(infeasible.gap_miles, 1),
+                "route_miles": round(route.distance_miles, 1),
+                "searched_up_to_miles_off_route": max(buffers),
+            },
+        )
     if buffer_used != buffers[0]:
-        warnings.append({
-            "code": "wide_station_search",
-            "message": f"no station within {buffers[0]:g} mi of the route covered a stretch; "
-                       f"searched up to {buffer_used:g} mi off-route",
-        })  # fmt: skip
+        warnings.append(
+            {
+                "code": "wide_station_search",
+                "message": f"part of the route has no station within {buffers[0]:g} mi; stations up to "
+                f"{buffer_used:g} mi off-route were considered (detours are included in fuel and cost)",
+            }
+        )
     final = _candidates(matches, index, buffer_used, origin)
-    cheapest_cost = cost_of(plan_fuel_stops(final, route.distance_miles, tank, fuel.miles), mpg)
+    cheapest = _bill(plan_fuel_stops(final, route.distance_miles, tank, fuel_miles, mpg, 0.0), mpg)
     try:
-        naive_cost = cost_of(naive_plan(final, route.distance_miles, tank, fuel.miles), mpg)
+        naive = _bill(naive_plan(final, route.distance_miles, tank, fuel_miles), mpg)
     except InfeasibleRoute:
-        naive_cost = None
+        naive = None
     timings["optimise"] = time.perf_counter() - t
 
-    stops = _stops(purchases, index, matches, origin, mpg)
-    total_cost = sum((s["cost"] for s in stops), Decimal("0"))
-    purchased_gallons = sum((Decimal(str(s["gallons"])) for s in stops), Decimal("0"))
+    billed = _bill(purchases, mpg)
+    total_cost = sum((cost for _, _, cost in billed), Decimal("0"))
+    cheapest_cost = min(sum((cost for _, _, cost in cheapest), Decimal("0")), total_cost)
+    stops = _stops(billed, index, start, mpg)
     timings["total"] = time.perf_counter() - t0
 
     query = {"start": start_text, "finish": finish_text}
-    if start_fuel is not None:
-        query["start_fuel"] = str(start_fuel)
+    if start_fuel.mode != "empty":
+        query["start_fuel"] = start_fuel.mode if start_fuel.mode == "full" else f"{start_fuel.miles:g}"
     if stop_cost != cfg["STOP_COST_USD"]:
         query["stop_cost"] = f"{stop_cost:g}"
     response = {
@@ -174,90 +177,111 @@ def plan_trip(start_text: str, finish_text: str, start_fuel=None, stop_cost=None
         "distance_miles": round(route.distance_miles, 1),
         "duration_hours": round(route.duration_hours, 2),
         "fuel_stops": stops,
-        "total_fuel_cost": _money(total_cost),
-        "fuel_purchased_gallons": float(purchased_gallons),
-        "trip_fuel_gallons": round(route.distance_miles / mpg, 3),
-        "savings_vs_naive": _money(Decimal(str(naive_cost)) - total_cost) if naive_cost is not None else None,
-        "cheapest_possible_fuel_cost": _money(Decimal(str(cheapest_cost))),
+        "total_fuel_cost": total_cost,
+        "total_gallons": float(sum((gal for _, gal, _ in billed), Decimal("0"))),
+        "cheapest_possible_fuel_cost": cheapest_cost,
+        "savings_vs_naive": (
+            _money(sum((cost for _, _, cost in naive), Decimal("0")) - total_cost) if naive is not None else None
+        ),
+        "map": {"url": f"{map_base_url}?{urlencode(query)}" if map_base_url else None},
         "assumptions": {
             "vehicle_range_miles": tank,
             "miles_per_gallon": mpg,
-            "start_fuel": fuel.mode if fuel.mode != "miles" else f"{fuel.miles:g} miles",
+            "start_fuel": start_fuel.mode if start_fuel.mode != "miles" else f"{start_fuel.miles:g} miles",
             "stop_cost_usd": stop_cost,
-            "station_search_buffer_miles": buffer_used,
-            "station_price": "lowest quote per station in the feed",
-            "station_location": "centre of the station's town (the feed has no coordinates)",
+            "station_search_miles_off_route": buffer_used,
+            "station_price": "lowest quote per station in the price list",
+            "station_location": "centre of the station's town (the price list has no coordinates)",
         },
         "warnings": warnings,
-        "map_url": f"{map_base_url}?{urlencode(query)}" if map_base_url else None,
-        "google_maps_url": _google_maps_url(start, finish, stops),
-        "routing_provider": route.provider,
-        "external_api_calls": calls,
-        "route_cache_hit": cache_hit,
-        "timings_ms": {k: round(v * 1000, 1) for k, v in timings.items()},
+        "meta": {
+            "routing_provider": route.provider,
+            "external_api_calls": calls,
+            "route_cache_hit": cache_hit,
+            "timings_ms": {k: round(v * 1000, 1) for k, v in timings.items()},
+        },
     }
     if include_route:
         line = simplify(route.coords)
-        response["route"] = {"type": "LineString", "coordinates": [[round(lo, 5), round(la, 5)] for la, lo in line]}
+        response["map"]["route"] = {
+            "type": "LineString",
+            "coordinates": [[round(lon, 5), round(lat, 5)] for lat, lon in line],
+        }
     log.info(
-        "plan start=%r finish=%r miles=%.0f stops=%d cost=%s cache_hit=%s calls=%s ms=%s",
-        start_text, finish_text, route.distance_miles, len(stops), response["total_fuel_cost"], cache_hit, calls,
-        response["timings_ms"],
-    )  # fmt: skip
+        "plan miles=%.0f stops=%d cost=%s cache_hit=%s calls=%s ms=%s",
+        route.distance_miles,
+        len(stops),
+        total_cost,
+        cache_hit,
+        calls,
+        response["meta"]["timings_ms"],
+    )
     return response
 
 
-def _candidates(matches: RouteMatches, index, buffer: float, origin) -> list[Candidate]:
+def _origin_station(index: StationIndex, start: Point, fuel: StartFuel, warnings: list, tank: float):
+    """For start_fuel=empty: the cheapest station close to the start, where the truck fills up before leaving."""
+    if fuel.mode != "empty":
+        return None
+    for radius in ORIGIN_RADII_MILES:
+        near_idx, near_dist = index.within(start.lat, start.lon, radius)
+        if near_idx.size:
+            j = int(np.argmin(index.price[near_idx]))
+            return int(near_idx[j]), float(near_dist[j])
+    warnings.append(
+        {
+            "code": "no_station_near_start",
+            "message": f"no station within {ORIGIN_RADII_MILES[-1]:g} mi of the start; "
+            f"assumed the vehicle leaves with a full tank ({tank:g} mi)",
+        }
+    )
+    return None
+
+
+def _candidates(matches: RouteMatches, index: StationIndex, buffer: float, origin) -> list[Candidate]:
     ok = matches.off_route_miles <= buffer
     out = [
-        Candidate(key=int(i), mile=float(m), price=float(index.price[i]))
-        for i, m in zip(matches.station_idx[ok], matches.mile[ok], strict=True)
+        Candidate(key=int(i), mile=float(m), price=float(index.price[i]), off=float(o))
+        for i, m, o in zip(matches.station_idx[ok], matches.mile[ok], matches.off_route_miles[ok], strict=True)
         if origin is None or int(i) != origin[0]
     ]
-    if origin is not None:
-        out.append(Candidate(key=origin[0], mile=0.0, price=float(index.price[origin[0]])))
+    if origin is not None:  # filling up before departure: no detour on the route
+        out.append(Candidate(key=("origin", origin[0]), mile=0.0, price=float(index.price[origin[0]])))
     return out
 
 
-def _stops(purchases, index, matches: RouteMatches, origin, mpg: float) -> list[dict]:
-    ids = [int(index.ids[p.candidate.key]) for p in purchases]
+def _stops(billed, index: StationIndex, start: Point, mpg: float) -> list[dict]:
+    def station_idx(key) -> int:
+        return key[1] if isinstance(key, tuple) else key
+
+    ids = [int(index.ids[station_idx(p.candidate.key)]) for p, _, _ in billed]
     stations = {
         s.opis_id: s
         for s in Station.objects.filter(opis_id__in=ids).select_related("place").annotate(price=Min("prices__price"))
     }
-    off_route = dict(zip(matches.station_idx.tolist(), matches.off_route_miles.tolist(), strict=True))
-    if origin is not None:
-        off_route[origin[0]] = origin[1]
     stops = []
-    for n, (p, opis_id) in enumerate(zip(purchases, ids, strict=True), 1):
+    for n, ((p, gallons, cost), opis_id) in enumerate(zip(billed, ids, strict=True), 1):
         s = stations[opis_id]
-        gallons = (Decimal(str(p.miles)) / Decimal(str(mpg))).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-        price = s.price.quantize(Decimal("0.001"), rounding=ROUND_HALF_UP)
-        stops.append({
-            "stop": n,
-            "opis_id": s.opis_id,
-            "name": s.name,
-            "address": s.address,
-            "city": s.city,
-            "state": s.state,
-            "highway": s.highway or None,
-            "exit": s.exit_number or None,
-            "lat": round(s.place.lat, 6),
-            "lon": round(s.place.lon, 6),
-            "mile_marker": round(p.candidate.mile, 1),
-            "off_route_miles": round(off_route.get(p.candidate.key, 0.0), 1),
-            "price_per_gallon": float(price),
-            "fuel_on_arrival_gallons": round(p.fuel_on_arrival_miles / mpg, 2),
-            "gallons": float(gallons),
-            "cost": _money(gallons * s.price),
-        })  # fmt: skip
+        is_origin = isinstance(p.candidate.key, tuple)
+        off_route = haversine_miles(start.lat, start.lon, s.place.lat, s.place.lon) if is_origin else p.candidate.off
+        stops.append(
+            {
+                "stop": n,
+                "opis_id": s.opis_id,
+                "name": s.name,
+                "address": s.address,
+                "city": s.city,
+                "state": s.state,
+                "highway": s.highway or None,
+                "exit": s.exit_number or None,
+                "lat": round(s.place.lat, 6),
+                "lon": round(s.place.lon, 6),
+                "mile_marker": round(p.candidate.mile, 1),
+                "off_route_miles": round(float(off_route), 1) + 0.0,
+                "price_per_gallon": float(s.price.normalize()),
+                "fuel_on_arrival_gallons": round(p.fuel_on_arrival_miles / mpg, 2) + 0.0,
+                "gallons": float(gallons),
+                "cost": cost,
+            }
+        )
     return stops
-
-
-def _google_maps_url(start: Point, finish: Point, stops: list[dict]) -> str:
-    params = {"api": "1", "origin": f"{start.lat:.5f},{start.lon:.5f}",
-              "destination": f"{finish.lat:.5f},{finish.lon:.5f}", "travelmode": "driving"}  # fmt: skip
-    waypoints = "|".join(f"{s['lat']},{s['lon']}" for s in stops[:9])  # Google allows up to 9 waypoints
-    if waypoints:
-        params["waypoints"] = waypoints
-    return "https://www.google.com/maps/dir/?" + urlencode(params)
