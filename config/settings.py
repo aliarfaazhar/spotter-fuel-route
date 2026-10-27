@@ -14,8 +14,9 @@ def env_bool(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-me")
-DEBUG = env_bool("DJANGO_DEBUG", True)
+DEV_SECRET_KEY = "dev-only-insecure-key-change-me"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", DEV_SECRET_KEY)  # config/wsgi.py refuses it outside DEBUG
+DEBUG = env_bool("DJANGO_DEBUG", False)
 ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0").split(",") if h]
 
 INSTALLED_APPS = [
@@ -101,11 +102,18 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Behind a TLS-terminating proxy (Cloud Run, a load balancer): trust X-Forwarded-Proto so map_url is https.
+if env_bool("DJANGO_BEHIND_PROXY"):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", "3600"))
+
 REST_FRAMEWORK = {
-    "DEFAULT_RENDERER_CLASSES": [
-        "rest_framework.renderers.JSONRenderer",
-        "rest_framework.renderers.BrowsableAPIRenderer",
-    ],
+    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"]
+    + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
+    # Every new route can cost calls to free third-party APIs; keep one client from burning through them.
+    "DEFAULT_THROTTLE_CLASSES": ["fuel.throttling.AnonRateThrottleFailOpen"],
+    "DEFAULT_THROTTLE_RATES": {"anon": os.environ.get("API_RATE_LIMIT", "60/min")},
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": [],
     "UNAUTHENTICATED_USER": None,
@@ -120,10 +128,12 @@ FUEL = {
     "BUFFER_STEPS_MILES": (10.0, 25.0, 50.0),
     "ORIGIN_STATION_RADIUS_MILES": 25.0,
     # Each refuelling stop costs driver time; pricing it at $10 removes penny-chasing stops
-    # (NYC->LA: 18 stops -> 7 for +0.9% fuel). stop_cost=0 on a request gives the strict cheapest plan.
+    # (NYC->LA: 10 stops -> 7 for +0.9% fuel). stop_cost=0 on a request gives the strict cheapest plan.
     "STOP_COST_USD": 10.0,
     "ROUTE_CACHE_TTL_SECONDS": 7 * 24 * 3600,
-    "ROUTE_CACHE_VERSION": 1,
+    "FALLBACK_ROUTE_CACHE_TTL_SECONDS": 600,  # a route from the fallback provider is only kept briefly
+    "ROUTE_CACHE_VERSION": 2,
+    "GEOCODE_CACHE_TTL_SECONDS": 24 * 3600,
 }
 
 ROUTING = {
@@ -131,8 +141,11 @@ ROUTING = {
     "ORS_PROFILE": os.environ.get("ORS_PROFILE", "driving-hgv"),
     "ORS_BASE_URL": "https://api.openrouteservice.org",
     "OSRM_BASE_URL": os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org"),
+    # Worst case stays well under gunicorn's 60 s timeout: ORS (5+15) then OSRM fallback (5+20).
     "CONNECT_TIMEOUT": 5.0,
-    "READ_TIMEOUT": 25.0,
+    "ORS_READ_TIMEOUT": 15.0,
+    "OSRM_READ_TIMEOUT": 20.0,
+    "GEOCODER_TIMEOUT": 5.0,
 }
 
 LOGGING = {
