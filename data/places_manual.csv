@@ -1,0 +1,4 @@
+key,name,state,lat,lon,land_area_sqmi,population,source,note
+hotspringsnationalpark,Hot Springs National Park,AR,34.489442,-93.050254,,,manual,postal name of Hot Springs (Census place)
+puebloofacoma,Pueblo of Acoma,NM,34.89644,-107.58172,,,manual,Acoma Pueblo (GeoNames)
+saintjohns,Saint Johns,FL,30.067911,-81.59075,,,manual,ZIP 32259 centroid (Census ZCTA); stations are at I-95 exit 329

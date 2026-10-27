@@ -1,0 +1,4 @@
+key,name,state,lat,lon,land_area_sqmi,population,source
+joelton,Joelton,TN,36.3131076,-86.8652772,,,nominatim
+ottawalake,Ottawa Lake,MI,41.7641517,-83.7493869,,,nominatim
+willowbeach,Willow Beach,AZ,35.8697801,-114.6600654,,,nominatim
