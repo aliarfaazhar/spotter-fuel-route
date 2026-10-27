@@ -200,8 +200,8 @@ data/                           the price list + cleaned, geocoded outputs
 - **Fuel prices:** the price list supplied with the assignment (`data/fuel-prices.csv`).
 - **Places and ZIP codes:** U.S. Census Bureau, 2026 Gazetteer Files (public domain).
 - **Places:** GeoNames (geonames.org), licensed CC BY 4.0.
-- **Routes and three town locations:** © OpenStreetMap contributors (ODbL), via OSRM and Nominatim.
-- **Map tiles:** © OpenStreetMap contributors, © CARTO.
+- **Routes, three town locations and the `/map` tiles:** © OpenStreetMap contributors (ODbL), via OSRM and Nominatim.
+- **Postman map tiles:** © Esri (Postman's sandbox can't send the Referer OSM's tile servers require).
 - **Optional truck routing:** openrouteservice.org.
 
 The code is MIT licensed (see `LICENSE`).
