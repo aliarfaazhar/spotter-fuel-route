@@ -35,8 +35,8 @@ def test_dominant_city_wins_without_a_state(corridor):
 def test_ambiguous_city_lists_candidates(corridor):
     from tests.conftest import make_place
 
-    make_place("Springfield", "IL", 39.8, -89.6, area=60)
-    make_place("Springfield", "MO", 37.2, -93.3, area=82)
+    make_place("Springfield", "IL", 39.8, -89.6, population=114_000)
+    make_place("Springfield", "MO", 37.2, -93.3, population=170_000)
     with pytest.raises(ResolveError) as exc:
         resolve("Springfield")
     assert exc.value.code == "ambiguous_location"
@@ -64,3 +64,50 @@ def test_foreign_regions_are_rejected_before_geocoding(corridor, text):
     with pytest.raises(ResolveError) as exc:
         resolve(text)
     assert exc.value.code == "outside_usa"
+
+
+def test_biggest_city_wins_by_population_not_area(corridor):
+    from tests.conftest import make_place
+
+    make_place("Atlanta", "GA", 33.76, -84.42, population=510_000)
+    big_rural = make_place("Atlanta", "ID", 43.64, -115.36, population=0)
+    big_rural.land_area_sqmi = 1303
+    big_rural.save()
+    assert resolve("Atlanta")[0].label == "Atlanta, GA"
+
+
+def test_country_suffix_needs_a_separator(corridor):
+    from tests.conftest import make_place
+
+    make_place("Columbus", "OH", 39.99, -82.99, population=913_000)
+    assert resolve("Columbus")[0].label == "Columbus, OH"  # not "Columb"
+    assert resolve("Chicago, IL USA")[0].label == "Chicago, IL"
+
+
+def test_full_width_unicode_is_normalised(corridor):
+    assert resolve("Ｃｈｉｃａｇｏ, ＩＬ")[0].label == "Chicago, IL"
+
+
+def test_islands_are_rejected_offline(corridor):
+    from fuel.models import ZipCode
+
+    ZipCode.objects.create(code="96813", lat=21.31, lon=-157.86)
+    with pytest.raises(ResolveError) as exc:
+        resolve("96813")
+    assert exc.value.code == "not_reachable_by_road"
+
+
+def test_geocoder_answers_are_cached(corridor):
+    route = respx.get("https://nominatim.openstreetmap.org/search").mock(
+        return_value=httpx.Response(200, json=[{"lat": "41.01", "lon": "-87.61", "display_name": "Somewhere, IL"}])
+    )
+    assert resolve("The Bean, Millennium Park")[1] == 1
+    assert resolve("The Bean, Millennium Park")[1] == 0
+    assert route.call_count == 1
+
+
+def test_geocoder_outage_is_a_503_not_unknown_location(corridor):
+    respx.get("https://nominatim.openstreetmap.org/search").mock(return_value=httpx.Response(429))
+    with pytest.raises(ResolveError) as exc:
+        resolve("Some Street Somewhere")
+    assert (exc.value.code, exc.value.status) == ("geocoder_unavailable", 503)
