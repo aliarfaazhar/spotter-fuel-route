@@ -15,4 +15,16 @@ target-version = "py312"
 extend-exclude = ["fuel/migrations"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "DJ"]
+select = ["E", "F", "I", "B", "UP", "DJ", "S"]  # S: Bandit's security checks
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S311"]  # assert is how pytest checks; random only generates test cases
+
+[tool.coverage.run]
+source = ["fuel", "config"]
+omit = ["fuel/migrations/*", "config/asgi.py"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+skip_covered = true

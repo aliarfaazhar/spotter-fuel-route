@@ -14,7 +14,7 @@ def env_bool(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).lower() in {"1", "true", "yes", "on"}
 
 
-DEV_SECRET_KEY = "dev-only-insecure-key-change-me"
+DEV_SECRET_KEY = "dev-only-insecure-key-change-me"  # noqa: S105 - local default; wsgi refuses it without DEBUG
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", DEV_SECRET_KEY)  # config/wsgi.py refuses it outside DEBUG
 DEBUG = env_bool("DJANGO_DEBUG", False)
 ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,0.0.0.0").split(",") if h]

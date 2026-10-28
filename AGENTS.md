@@ -9,12 +9,14 @@ this file covers how the code is put together and the rules that keep it correct
 make setup   # venv (Python 3.12+), dependencies, .env, SQLite with all stations and places
 make run     # http://localhost:8000 (PORT=8001 for another port); /map is the UI
 make test    # pytest, no network: every HTTP call must be mocked
+make coverage  # tests + coverage report; fails under 85% (pyproject.toml)
 make lint    # ruff check + ruff format --check (line length 120)
 make live    # the one test that calls the real routing API (RUN_LIVE=1)
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, `makemigrations --check` and the tests on every push. Run `make lint test`
-before committing.
+CI (`.github/workflows/ci.yml`) runs on every push: lint (ruff, including Bandit's `S` security rules),
+`makemigrations --check`, tests with a coverage minimum, `pip-audit`, and a Docker build + smoke test. Run
+`make lint coverage` before committing. `.flake8` mirrors the ruff settings for editors that use flake8.
 
 ## Request flow
 

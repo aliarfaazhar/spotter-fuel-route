@@ -1,7 +1,7 @@
 services:
   api:
     build: .
-    ports: ["8000:8000"]
+    ports: ["${API_PORT:-8000}:8000"]  # API_PORT=8001 docker compose up, if 8000 is taken
     environment:
       DATABASE_URL: postgres://fuel:fuel@db:5432/fuel
       REDIS_URL: redis://redis:6379/0

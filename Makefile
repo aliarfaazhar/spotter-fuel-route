@@ -4,7 +4,7 @@ PORT ?= 8000
 PYTHON ?= $(shell for p in python3.14 python3.13 python3.12 python3; do \
 	command -v $$p >/dev/null 2>&1 && $$p -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null && { echo $$p; break; }; done)
 
-.PHONY: setup run test lint live docker
+.PHONY: setup run test coverage lint live docker
 
 setup:  ## venv, dependencies, .env, database (SQLite) loaded from the committed data
 	@if [ -x $(PY) ] && ! $(PY) -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then \
@@ -25,6 +25,9 @@ run:
 
 test:
 	$(PY) -m pytest
+
+coverage:  ## tests with a coverage report (fails under the minimum in pyproject.toml)
+	$(PY) -m coverage run -m pytest && $(PY) -m coverage report
 
 lint:
 	$(PY) -m ruff check . && $(PY) -m ruff format --check .

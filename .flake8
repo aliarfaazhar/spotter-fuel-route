@@ -1,0 +1,6 @@
+# For editors and anyone running flake8. The project's linter is ruff (pyproject.toml); these match its settings.
+[flake8]
+max-line-length = 120
+# E203 (space before ':' in slices) conflicts with the formatter, as in Black's own guidance.
+extend-ignore = E203
+extend-exclude = .venv, fuel/migrations

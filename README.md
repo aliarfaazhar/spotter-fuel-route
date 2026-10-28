@@ -94,7 +94,7 @@ the request falls back to OSRM once.
 | Problem | Fix |
 |---|---|
 | `Python 3.12+ not found` | Install [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh \| sh`) or Python 3.12+ from python.org, then `make setup` again |
-| `That port is already in use` / `address already in use` | `make run PORT=8001`. For Docker, stop whatever uses 8000 or change `ports` in `docker-compose.yml` |
+| `That port is already in use` / `address already in use` | `make run PORT=8001`. For Docker: `API_PORT=8001 docker compose up --build` |
 | `routing_unavailable` (HTTP 502) | The public OSRM server is busy or down. Retry in a minute, or add a free `ORS_API_KEY` (above) |
 | HTTP 429 `throttled` | More than 60 requests a minute from one client. Raise it with `API_RATE_LIMIT=600/min` in `.env` and restart |
 | The map page shows a grey background but no map | The basemap tiles come from Esri's public tile server; a content blocker or offline network can stop them. The route, stops and costs still show |
@@ -241,9 +241,15 @@ ZipCode (code PK, lat, lon)
 ## Tests
 
 ```bash
-make test    # 530+ tests, including 400 randomised checks against the exact solver; no network access
+make test    # 548 tests, including 400 randomised checks against the exact solver; no network access
+make coverage  # the same, with a coverage report (CI fails below 85%; it's ~87%)
 make live    # optional: a test against the real routing API
 ```
+
+CI (GitHub Actions) runs on every push: ruff (with Bandit's security rules) and the tests with coverage; `pip-audit`
+for known vulnerabilities in the dependencies; and a Docker job that builds the image, starts it with PostgreSQL and
+Redis, and smoke-tests the running API. Dependabot opens weekly update pull requests for packages, Actions and the
+Docker image.
 
 Every HTTP call is mocked, and an unmocked call fails the test. Coverage:
 - the optimiser against the MILP, including detours;

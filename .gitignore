@@ -9,3 +9,4 @@ staticfiles/
 .ruff_cache/
 .DS_Store
 .vscode/
+.coverage
