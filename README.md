@@ -7,18 +7,18 @@ fuel price list.
 ```
 GET /api/route?start=New York, NY&finish=Los Angeles, CA
 → 2,810 mi · 7 fuel stops · $873.68 of fuel · $85.24 cheaper than refuelling without looking at prices
-→ 1 call to the routing API (0 when repeated) · ~50 ms when the route is cached
+→ 1 call to the routing API (0 when repeated) · ~10 ms for a repeat request
 ```
 
 ## The assignment, point by point
 
 | Asked for | Where it is |
 |---|---|
-| Start and finish inside the USA | `start` and `finish` accept `City, ST`, a city name on its own, a ZIP code, `lat,lon` or an address. Places outside the US, and islands with no road to the mainland, get a 400 |
+| Start and finish inside the USA | `start` and `finish` accept `City, ST`, a city name on its own, a ZIP code, `lat,lon` or an address. Places outside the US, a state or country on its own, and places with no road to the mainland (Hawaii, the territories, Juneau and the rest of Southeast and western Alaska, Nantucket, Martha's Vineyard, Catalina) get a 400 |
 | A map of the route | `map.route` is the route as a GeoJSON line, included by default. `map.url` opens an interactive map, and every Postman request draws it in the *Visualize* tab |
 | Cost-effective fuel stops, 500-mile range | `fuel_stops`, chosen by an exact optimiser. "Optimal" here means the lowest fuel cost plus $10 per stop, so the plan doesn't stop to save a cent. `stop_cost=0` gives the pure cheapest plan, and `cheapest_possible_fuel_cost` is always shown next to it |
-| Total spent on fuel at 10 mpg | `total_fuel_cost` is the sum of the stop costs, to the cent. `total_gallons` is the gallons bought |
-| Fast | About 50 ms when the route is cached. On a new route nearly all the time is the routing API (~1 s), and our own work takes ~30 ms (`meta.timings_ms`) |
+| Total spent on fuel at 10 mpg | `total_fuel_cost` is the sum of the stop costs, to the cent, and `total_gallons` is the gallons bought. `trip_fuel_cost` is what all the fuel the trip burns is worth: the same figure when the tank starts empty, and with fuel already in the tank it values those gallons at the local listed price, so a full-tank trip doesn't show $0 |
+| Fast | A new route takes ~1.5 s, nearly all of it the routing API; our own work is ~30 ms (`meta.timings_ms`). A repeat is answered from the cached plan in ~10 ms. Under load in Docker (2 gunicorn workers, Redis): about 700 requests/s, median 14 ms at 10 concurrent clients, 73 ms at 50 |
 | One routing call is ideal | One routing call per new route and zero for a repeat. The only exception is a route the price list can't fuel, which takes one more call for a detour (two at most). `meta.external_api_calls` reports the count on every response |
 | Latest stable Django | Django 6.1.2 with Django REST Framework 3.18 |
 
@@ -48,7 +48,7 @@ OpenRouteService's truck profile instead. If ORS fails, the request falls back t
 
 | Parameter | Default | |
 |---|---|---|
-| `start`, `finish` | required | `Chicago, IL`, `Chicago`, `60601`, `41.88,-87.63`, or an address (resolved to its city or ZIP; free text the offline data can't place costs one geocoding call) |
+| `start`, `finish` | required | `Chicago, IL`, `Chicago`, `60601`, `41.88,-87.63`, or an address (resolved to its city or ZIP). Text the offline data can't place costs one geocoding call, and the answer is kept only if it's a street address or a place whose name matches what was typed, so "Tokyo" doesn't become a Tokyo Street in Texas |
 | `start_fuel` | `empty` | `empty` means the truck fills up at the cheapest station near the start before leaving. `full`, or a number of miles, means fuel is already in the tank |
 | `stop_cost` | `10` | Dollars counted per refuelling stop, standing in for driver time. `0` gives the strict cheapest plan |
 | `include_route` | `true` | `false` leaves out the route geometry (~25 KB per route) |
@@ -63,19 +63,21 @@ Response, trimmed:
   "fuel_stops": [
     {"stop": 1, "name": "Fuel 4", "address": "US-9", "city": "Jersey City", "state": "NJ",
      "mile_marker": 0.0, "off_route_miles": 7.4, "price_per_gallon": 3.239, "gallons": 40.633, "cost": 131.61,
-     "fuel_on_arrival_gallons": 0.0, "lat": 40.711417, "lon": -74.06476, ...},
+     "fuel_on_arrival_gallons": 0.0, "lat": 40.711417, "lon": -74.06476,
+     "route_lat": 40.711417, "route_lon": -74.06476, ...},
     ...
   ],
   "total_fuel_cost": 873.68,
   "total_gallons": 283.389,
   "unpriced_gallons": 0.0, "cost_is_complete": true,   // see "When the price list runs out" below
+  "trip_fuel_cost": {"usd": 873.68, "gallons_used": 283.4, "bought_at_stops_usd": 873.68, "estimated_gallons": 0, ...},
   "cheapest_possible_fuel_cost": 865.6,     // the same trip with stop_cost=0 (10 stops)
   "savings_vs_naive": 85.24,                // vs. driving as far as a tank allows and filling up, price-blind
   "route_options": [{"name": "Direct route", "selected": true, "status": "ok", "distance_miles": 2810.4, ...}],
   "map": {"url": "http://localhost:8000/map?start=...", "route": {"type": "LineString", "coordinates": [...]}},
   "assumptions": {...}, "warnings": [],
   "meta": {"routing_provider": "osrm:driving", "external_api_calls": {"routing": 1, "geocoding": 0},
-           "route_cache_hit": false, "timings_ms": {...}}
+           "route_cache_hit": false, "plan_cache_hit": false, "timings_ms": {...}}
 }
 ```
 
@@ -102,8 +104,8 @@ start/finish ──► resolve offline (city / ZIP / lat,lon) ──► route ca
 
 **Routing calls.**
 - Places are resolved offline, from Census and GeoNames files committed to the repo. That leaves the route as the only external call.
-- Only the route is cached (Redis, or a file cache), so changing `stop_cost` or `start_fuel` never triggers a new routing call.
-- **Worst case:** an address the offline data can't place costs one geocoding call each for start and finish (cached for a day). An ORS outage costs one OSRM fallback call. A route the price list can't fuel costs one or two detour calls.
+- Two caches (Redis, or a file cache). The route is cached by its end points, so changing `stop_cost` or `start_fuel` never triggers a new routing call. The finished plan is cached by end points and parameters, so a repeat skips matching and optimising too.
+- **Worst case:** an address the offline data can't place costs one geocoding call each for start and finish (cached for a day). An ORS outage, used-up daily quota or rejected key costs one OSRM fallback call. A route the price list can't fuel costs one or two detour calls.
 
 **Matching stations to the route.**
 - All 6,626 stations are loaded into memory with one SQL query.
@@ -131,7 +133,8 @@ start/finish ──► resolve offline (city / ZIP / lat,lon) ──► route ca
 | **No coordinates.** Addresses look like `I-44, EXIT 283 & US-69` | Each station is placed at its town's point. Towns are matched offline against Census 2026 places, then GeoNames, then Census county subdivisions. The rest come from 3 Nominatim lookups and 3 entered by hand (`data/places_manual.csv`). All 6,626 US stations are placed |
 | **620 Canadian rows** (ON, AB, BC…) | Dropped: the task is US only |
 | **The same station at different prices** (487 stations) | Every price is kept as a `StationPrice` row, and the planner uses the lowest |
-| City names padded with spaces; `St.` vs `Saint`; `LaGrange` vs `La Grange`; `S Coffeyville` | Names are compared through a normalised key (`fuel/services/names.py`) |
+| City names padded with spaces; `St.` vs `Saint`; `LaGrange` vs `La Grange`; `S Coffeyville`; `Lee's Summit` vs `Lees Summit` | Names are compared through a normalised key (`fuel/services/names.py`) |
+| **Census points in the wrong place**: San Francisco's is on the Farallon Islands, Anchorage's 19 mi out of town | Corrected to the city centre when the data loads (`COORDINATE_FIXES` in `fuel/services/datafiles.py`) |
 | **California has only 8 stations** (16 price rows), all in the far south-east | San Francisco → Seattle has a 576-mile stretch with no listed station. The API detours through Nevada and Oregon and shows the direct route as out of range (see above) |
 
 To rebuild everything from the sources, run:
@@ -154,12 +157,13 @@ ZipCode (code PK, lat, lon)
 
 ## Assumptions and limitations
 
-- **Station locations.** The price list has no coordinates, so each station is placed at the centre of its town. Its distance from the route (`off_route_miles`) is approximate.
+- **Station locations.** The price list has no coordinates, so each station is placed at the centre of its town. Its distance from the route (`off_route_miles`) is approximate. Each stop also has `route_lat`/`route_lon`, the point where the route passes it (the exit to take); the maps pin stops there so they sit on the highway. The fill-up before departure keeps its town position.
 - **Starting fuel.** With the default `start_fuel=empty`, the trip starts by filling up at the cheapest station within 10 miles of the start (25 miles if there isn't one), and the drive to that station isn't billed. Where there's no station that close (most of California), the first purchase is unpriced fuel at the start, just enough to reach a listed station, and `warnings` says how much.
 - **Detours** are only chosen to stay on listed stations. A real truck would refuel in California; the direct route stays in `route_options` with its distance.
 - **Prices** are treated as fixed for the trip, and the tank may run down to empty exactly at a station.
 - **Route type.** Without an ORS key the route is OSRM's car route.
 - **Border coordinates.** `lat,lon` input is checked against US ZIP centroids, so a point just across the border (Windsor, Tijuana) can pass. City and ZIP input can't.
+- **Coordinates off the road network.** The router snaps `lat,lon` to the nearest road. Moved more than 2 mi, the response warns (`moved_to_road`); more than 10 mi (a point in a lake), it's a 400 `not_near_a_road`.
 
 ## Tests
 
@@ -172,7 +176,7 @@ Every HTTP call is mocked, and an unmocked call fails the test. Coverage:
 - the optimiser against the MILP, including detours;
 - cleaning the price list, and normalising place names;
 - detours through listed stations, and unpriced fuel when there's no detour;
-- resolving input, including rejecting "Toronto, Ontario" before a US-only geocoder turns it into Ontario, California;
+- resolving input, including rejecting "Toronto, Ontario" before a US-only geocoder turns it into Ontario, California, and geocoder guesses that don't match the input;
 - routing request shape and `[lon, lat]` order;
 - malformed responses from the provider, the fallback, and a Redis or cache outage;
 - the one-query station load;
@@ -204,6 +208,6 @@ data/                           the price list + cleaned, geocoded outputs
 - **Places:** GeoNames (geonames.org), licensed CC BY 4.0.
 - **Routes, three town locations and the `/map` tiles:** © OpenStreetMap contributors (ODbL), via OSRM and Nominatim.
 - **Postman map tiles:** © Esri (Postman's sandbox can't send the Referer OSM's tile servers require).
-- **Optional truck routing:** openrouteservice.org.
+- **Optional truck routing:** openrouteservice (HeiGIT); free key at account.heigit.org.
 
 The code is MIT licensed (see `LICENSE`).

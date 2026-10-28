@@ -2,6 +2,8 @@
 
 import logging
 
+from django.core.exceptions import PermissionDenied
+from django.http import Http404, JsonResponse
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
@@ -31,9 +33,25 @@ def exception_handler(exc, context):
     if response is None:  # anything unexpected: log it, answer in the same JSON shape, leak nothing
         log.exception("unhandled error", exc_info=exc)
         return error_response(500, "internal_error", "something went wrong; please try again")
-    code = getattr(exc, "default_code", "error")
+    if isinstance(exc, Http404):
+        code = "not_found"
+    elif isinstance(exc, PermissionDenied):
+        code = "permission_denied"
+    else:
+        code = getattr(exc, "default_code", "error")
     detail = response.data
     message = detail.get("detail", "invalid request") if isinstance(detail, dict) else str(detail)
     details = detail if isinstance(detail, dict) and "detail" not in detail else {}
     response.data = {"error": {"code": code, "message": str(message), "details": details}}
     return response
+
+
+def json_404(request, exception=None, **kwargs):
+    """Unknown URLs answer in the same error shape as the API, never with an HTML page."""
+    body = {"error": {"code": "not_found", "message": f"no such endpoint: {request.path}", "details": {}}}
+    return JsonResponse(body, status=404)
+
+
+def json_500(request):
+    body = {"error": {"code": "internal_error", "message": "something went wrong; please try again", "details": {}}}
+    return JsonResponse(body, status=500)

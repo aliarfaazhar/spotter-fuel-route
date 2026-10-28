@@ -82,7 +82,9 @@ else:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
-            "LOCATION": BASE_DIR / ".cache",
+            "LOCATION": os.environ.get("DJANGO_CACHE_DIR", BASE_DIR / ".cache"),
+            # The default cap is 300 entries; routes (~30 KB each) shouldn't be culled by small geocoder entries.
+            "OPTIONS": {"MAX_ENTRIES": 5000},
         }
     }
 
@@ -109,6 +111,8 @@ if env_bool("DJANGO_BEHIND_PROXY"):
     SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_HSTS_SECONDS", "3600"))
 
 REST_FRAMEWORK = {
+    # The client IP used for rate limiting. Without a proxy, never trust a client-sent X-Forwarded-For.
+    "NUM_PROXIES": int(os.environ.get("DJANGO_NUM_PROXIES", "1" if env_bool("DJANGO_BEHIND_PROXY") else "0")),
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"]
     + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
     # Every new route can cost calls to free third-party APIs; keep one client from burning through them.
@@ -132,14 +136,15 @@ FUEL = {
     "STOP_COST_USD": 10.0,
     "ROUTE_CACHE_TTL_SECONDS": 7 * 24 * 3600,
     "FALLBACK_ROUTE_CACHE_TTL_SECONDS": 600,  # a route from the fallback provider is only kept briefly
-    "ROUTE_CACHE_VERSION": 2,
+    "ROUTE_CACHE_VERSION": 3,
     "GEOCODE_CACHE_TTL_SECONDS": 24 * 3600,
 }
 
 ROUTING = {
     "ORS_API_KEY": os.environ.get("ORS_API_KEY", ""),
     "ORS_PROFILE": os.environ.get("ORS_PROFILE", "driving-hgv"),
-    "ORS_BASE_URL": "https://api.openrouteservice.org",
+    # HeiGIT moved ORS off api.openrouteservice.org (reportedly retiring in Nov 2026); keys work on both.
+    "ORS_BASE_URL": os.environ.get("ORS_BASE_URL", "https://api.heigit.org/openrouteservice"),
     "OSRM_BASE_URL": os.environ.get("OSRM_BASE_URL", "https://router.project-osrm.org"),
     # Worst case stays well under gunicorn's 60 s timeout: ORS (5+15) then OSRM fallback (5+20).
     "CONNECT_TIMEOUT": 5.0,

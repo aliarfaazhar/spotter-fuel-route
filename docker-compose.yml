@@ -10,6 +10,7 @@ services:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-compose-demo-key-not-for-production}
       DJANGO_ALLOWED_HOSTS: "localhost,127.0.0.1,0.0.0.0"
       ORS_API_KEY: ${ORS_API_KEY:-}
+      API_RATE_LIMIT: ${API_RATE_LIMIT:-60/min}
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }

@@ -12,6 +12,7 @@ class RouteQuerySerializer(serializers.Serializer):
     start_fuel = serializers.CharField(
         max_length=10,
         required=False,
+        allow_blank=True,
         default="empty",
         help_text="'empty' (default: fill up near the start), 'full', or miles of range already in the tank.",
     )
@@ -24,6 +25,14 @@ class RouteQuerySerializer(serializers.Serializer):
     include_route = serializers.BooleanField(
         required=False, default=True, help_text="Include the route as a GeoJSON LineString under map.route."
     )
+
+    def to_internal_value(self, data):
+        stop_cost = data.get("stop_cost") if hasattr(data, "get") else None
+        if isinstance(stop_cost, bool):  # JSON true would otherwise become 1.0
+            raise serializers.ValidationError({"stop_cost": ["must be a number"]})
+        if isinstance(stop_cost, str) and not stop_cost.strip():  # "stop_cost=" means the default, GET or POST
+            data = {k: v for k, v in data.items() if k != "stop_cost"}
+        return super().to_internal_value(data)
 
     def validate_start_fuel(self, value: str) -> StartFuel:
         tank = settings.FUEL["VEHICLE_RANGE_MILES"]
