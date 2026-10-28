@@ -14,11 +14,11 @@ from dataclasses import dataclass
 import httpx
 import numpy as np
 from django.conf import settings
-from django.core.cache import cache
 from scipy.spatial import cKDTree
 
 from fuel.models import Place, ZipCode
 
+from .caching import safe_add, safe_get, safe_set
 from .geometry import chord_to_miles, haversine_miles, to_xyz
 from .names import place_key, state_code
 
@@ -182,12 +182,12 @@ def _geocode(text: str) -> tuple[Point | None, int]:
     is a street address the user typed, or a place whose name matches what they typed.
     """
     key = "geocode:v2:" + hashlib.sha256(" ".join(text.lower().split()).encode()).hexdigest()
-    cached = _cache_get(key)
+    cached = safe_get(key)
     if cached is not None:
         return (Point(*cached) if cached else None), 0
 
     for _ in range(20):  # wait up to ~2 s for the shared 1 req/s slot
-        if _cache_add("nominatim-slot", 1, timeout=1):
+        if safe_add("nominatim-slot", 1, timeout=1):
             break
         time.sleep(0.1)
     headers = {"User-Agent": "spotter-fuel-route/1.0 (+https://github.com/aliarfaazhar/spotter-fuel-route)"}
@@ -203,7 +203,8 @@ def _geocode(text: str) -> tuple[Point | None, int]:
         point = _accept_hit(text, hits[0]) if isinstance(hits, list) and hits else None
     except (ValueError, KeyError, TypeError, IndexError):
         point = None
-    _cache_set(key, (point.lat, point.lon, point.label, point.resolved_by) if point else (), 24 * 3600)
+    found = (point.lat, point.lon, point.label, point.resolved_by) if point else ()
+    safe_set(key, found, settings.FUEL["GEOCODE_CACHE_TTL_SECONDS"])
     return point, 1
 
 
@@ -234,28 +235,6 @@ def _accept_hit(text: str, hit: dict) -> Point | None:
     else:
         label = str(hit.get("display_name", text))
     return Point(float(hit["lat"]), float(hit["lon"]), label, "geocoder")
-
-
-def _cache_get(key):
-    try:
-        return cache.get(key)
-    except Exception:  # a cache outage must not take the API down
-        log.warning("geocode cache unavailable", exc_info=True)
-        return None
-
-
-def _cache_set(key, value, timeout):
-    try:
-        cache.set(key, value, timeout)
-    except Exception:
-        log.warning("geocode cache unavailable; not caching", exc_info=True)
-
-
-def _cache_add(key, value, timeout) -> bool:
-    try:
-        return cache.add(key, value, timeout)
-    except Exception:
-        return True
 
 
 def _split_state(text: str) -> tuple[str, str] | None:

@@ -12,9 +12,9 @@ import threading
 from fuel.models import Place
 
 from .names import place_key, state_code
-from .resolver import ISLANDS
+from .resolver import ISLANDS, TERRITORIES
 
-NO_ROAD_TO_MAINLAND = ("HI", "PR", "VI", "GU", "MP", "AS")  # the planner rejects these; don't suggest them
+NO_ROAD_TO_MAINLAND = ("HI", *TERRITORIES)  # the planner rejects these; don't suggest them
 
 _entries: tuple[list[str], list[tuple[int, str]]] | None = None
 _lock = threading.Lock()

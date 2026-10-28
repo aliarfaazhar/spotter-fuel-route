@@ -264,13 +264,17 @@ fuel/services/
   routing.py                    the only module that calls a routing API
   stations.py                   in-memory station index + route matching
   optimizer.py                  exact stop-cost optimiser (+ price-blind baseline)
+  candidates.py                 where fuel may be bought: stations, the fill-up before departure, unlisted fuel
   detour.py                     waypoints through listed stations when the direct route can't be fuelled
-  planner.py                    one request end to end: caching, response
+  planner.py                    one request end to end: caches, direct route, detour
+  report.py                     the response: billed stops (Decimal), trip cost, route options, warnings
+  caching.py                    cache access that survives a cache outage
 fuel/serializers.py, views.py   API input and endpoint; errors.py for the error shape
 fuel/templates/fuel/map.html    the map page
 fuel/management/commands/       build_gazetteer, import_fuel_prices
 fuel/migrations/0002_*          loads the committed data on `migrate`
 data/                           the price list + cleaned, geocoded outputs
+AGENTS.md                       how the code fits together and the rules that keep it correct (CLAUDE.md points here)
 ```
 
 ## Data sources

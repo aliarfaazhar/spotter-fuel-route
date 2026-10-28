@@ -130,7 +130,8 @@ FUEL = {
     "VEHICLE_RANGE_MILES": 500.0,
     "MILES_PER_GALLON": 10.0,
     "BUFFER_STEPS_MILES": (10.0, 25.0, 50.0),
-    "ORIGIN_STATION_RADIUS_MILES": 25.0,
+    # start_fuel=empty: fill up at the cheapest station this close to the start, trying the nearer radius first
+    "ORIGIN_STATION_RADII_MILES": (10.0, 25.0),
     # Each refuelling stop costs driver time; pricing it at $10 removes penny-chasing stops
     # (NYC->LA: 10 stops -> 7 for +0.9% fuel). stop_cost=0 on a request gives the strict cheapest plan.
     "STOP_COST_USD": 10.0,

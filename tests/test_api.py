@@ -300,3 +300,9 @@ def test_repeat_trip_is_served_from_the_plan_cache(client, corridor, osrm):
     assert again["start"]["query"] == "chicago" and "start=chicago" in again["map"]["url"]
     other = get(client, start="Chicago, IL", finish="Omaha, NE", stop_cost="0").json()
     assert other["meta"]["plan_cache_hit"] is False  # different parameters, different plan
+
+
+def test_home_opens_the_empty_map(client):
+    # Not a pre-filled trip: just opening the site must never spend a routing call.
+    resp = client.get("/")
+    assert resp.status_code == 302 and resp["Location"] == "/map"
