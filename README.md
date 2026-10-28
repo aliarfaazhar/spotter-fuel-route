@@ -10,7 +10,99 @@ GET /api/route?start=New York, NY&finish=Los Angeles, CA
 → 1 call to the routing API (0 when repeated) · ~10 ms for a repeat request
 ```
 
+## Quick start
+
+No API key, signup or database server is needed: the station and place data ship with the repo, and routing uses
+the public OSRM server.
+
+**You need:** Python 3.12 or newer (or [uv](https://docs.astral.sh/uv/), which fetches Python itself), `git`, and
+`make`. macOS and Linux have `make`; on Windows, follow [Without make](#without-make-windows) or use Docker.
+
+```bash
+git clone https://github.com/aliarfaazhar/spotter-fuel-route.git
+cd spotter-fuel-route
+make setup     # ~1 min: virtualenv, dependencies, .env, SQLite database with all stations and places
+make run       # serves on http://localhost:8000 (another port: make run PORT=8001)
+```
+
+`make setup` picks the newest Python 3.12+ it finds, even where `python3` is older (macOS ships 3.9). It is safe
+to run again.
+
+### Check it works
+
+In a second terminal:
+
+```bash
+curl "http://localhost:8000/api/route?start=Chicago,IL&finish=Houston,TX&include_route=false"
+```
+
+You should get JSON with `fuel_stops` and `total_fuel_cost` in about 1–2 seconds; the same request again answers
+in milliseconds from the cache.
+
+Then open **http://localhost:8000/map** in a browser: type two places (suggestions appear as you type) or click an
+example such as *New York → LA*.
+
+### Postman
+
+1. In Postman, choose **Import** and pick `postman_collection.json` from the repo.
+2. With the server running, open any request and click **Send**. The collection's `base_url` variable is
+   `http://localhost:8000`; change it on the collection's *Variables* tab if you use another port.
+3. Open the **Visualize** tab of the response to see the route and stops on a map. Each request also runs checks
+   (status, cost adds up, routing-call count) on the *Test Results* tab.
+
+### Docker (PostgreSQL + Redis)
+
+With Docker Desktop running:
+
+```bash
+docker compose up --build     # first build takes a few minutes; then http://localhost:8000
+```
+
+This runs the API under gunicorn with PostgreSQL and Redis, as in production. `make setup` is not needed for it.
+
+### Without make (Windows)
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+copy .env.example .env
+.venv\Scripts\python manage.py migrate
+.venv\Scripts\python manage.py runserver 8000
+```
+
+On macOS/Linux the same steps are `python3.12 -m venv .venv`, `.venv/bin/python -m pip install -r
+requirements-dev.txt`, `cp .env.example .env`, then `.venv/bin/python manage.py migrate` and `... runserver 8000`.
+Don't skip copying `.env`: it turns on development mode, without which the dev server refuses the built-in
+development secret key.
+
+### Optional: truck routing
+
+Routing uses OSRM's public server (car profile) by default. For openrouteservice's truck (HGV) profile, sign up
+free at https://account.heigit.org, create a token, and put it in `.env`:
+
+```
+ORS_API_KEY=your-token
+```
+
+Restart the server (`make run`, or `docker compose up` re-reads `.env`). Responses then show
+`"routing_provider": "openrouteservice:driving-hgv"`. If ORS is down, rejects the key or its daily quota runs out,
+the request falls back to OSRM once.
+
+### Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `Python 3.12+ not found` | Install [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh \| sh`) or Python 3.12+ from python.org, then `make setup` again |
+| `That port is already in use` / `address already in use` | `make run PORT=8001`. For Docker, stop whatever uses 8000 or change `ports` in `docker-compose.yml` |
+| `routing_unavailable` (HTTP 502) | The public OSRM server is busy or down. Retry in a minute, or add a free `ORS_API_KEY` (above) |
+| HTTP 429 `throttled` | More than 60 requests a minute from one client. Raise it with `API_RATE_LIMIT=600/min` in `.env` and restart |
+| The map page shows a grey background but no map | The basemap tiles come from Esri's public tile server; a content blocker or offline network can stop them. The route, stops and costs still show |
+| Postman: `ECONNREFUSED` | The server isn't running, or `base_url` points at a different port |
+| `DisallowedHost` | You opened it by a host name other than localhost; add it to `DJANGO_ALLOWED_HOSTS` in `.env` |
+| Tests | `make test` (no network needed); `make lint` for ruff |
+
 ## The assignment, point by point
+
 
 | Asked for | Where it is |
 |---|---|
@@ -22,26 +114,6 @@ GET /api/route?start=New York, NY&finish=Los Angeles, CA
 | One routing call is ideal | One routing call per new route and zero for a repeat. The only exception is a route the price list can't fuel, which takes one more call for a detour (two at most). `meta.external_api_calls` reports the count on every response |
 | Latest stable Django | Django 6.1.2 with Django REST Framework 3.18 |
 
-## Run it (Python 3.12+)
-
-**Option A: local, using SQLite. No API key or signup needed.**
-
-```bash
-make setup     # venv, dependencies, .env, then `migrate`, which also loads all station and place data (~8 s)
-make run       # http://localhost:8000
-```
-
-**Option B: Docker, using PostgreSQL and Redis.**
-
-```bash
-docker compose up --build     # http://localhost:8000
-```
-
-Open **http://localhost:8000/map** for the map, or import `postman_collection.json` into Postman.
-
-Routing uses the public OSRM server, so no key is needed. Put a free `ORS_API_KEY` in `.env` to use
-OpenRouteService's truck profile instead. If ORS fails, the request falls back to OSRM once.
-
 ## API
 
 `GET /api/route`, or `POST` with the same fields as JSON.
@@ -51,7 +123,7 @@ OpenRouteService's truck profile instead. If ORS fails, the request falls back t
 | `start`, `finish` | required | `Chicago, IL`, `Chicago`, `60601`, `41.88,-87.63`, or an address (resolved to its city or ZIP). Text the offline data can't place costs one geocoding call, and the answer is kept only if it's a street address or a place whose name matches what was typed, so "Tokyo" doesn't become a Tokyo Street in Texas |
 | `start_fuel` | `empty` | `empty` means the truck fills up at the cheapest station near the start before leaving. `full`, or a number of miles, means fuel is already in the tank |
 | `stop_cost` | `10` | Dollars counted per refuelling stop, standing in for driver time. `0` gives the strict cheapest plan |
-| `include_route` | `true` | `false` leaves out the route geometry (~25 KB per route) |
+| `include_route` | `true` | `false` leaves out the route geometry (~75 KB for New York → Los Angeles) |
 
 Response, trimmed:
 
@@ -168,7 +240,7 @@ ZipCode (code PK, lat, lon)
 ## Tests
 
 ```bash
-make test    # ~80 tests plus 400 randomised checks against the exact solver; no network access
+make test    # 530+ tests, including 400 randomised checks against the exact solver; no network access
 make live    # optional: a test against the real routing API
 ```
 
@@ -206,8 +278,8 @@ data/                           the price list + cleaned, geocoded outputs
 - **Fuel prices:** the price list supplied with the assignment (`data/fuel-prices.csv`).
 - **Places and ZIP codes:** U.S. Census Bureau, 2026 Gazetteer Files (public domain).
 - **Places:** GeoNames (geonames.org), licensed CC BY 4.0.
-- **Routes, three town locations and the `/map` tiles:** © OpenStreetMap contributors (ODbL), via OSRM and Nominatim.
-- **Postman map tiles:** © Esri (Postman's sandbox can't send the Referer OSM's tile servers require).
+- **Routes and three town locations:** © OpenStreetMap contributors (ODbL), via OSRM and Nominatim.
+- **Map tiles** on `/map` and in Postman: Esri World Gray Canvas (© Esri, HERE, Garmin, © OpenStreetMap contributors).
 - **Optional truck routing:** openrouteservice (HeiGIT); free key at account.heigit.org.
 
 The code is MIT licensed (see `LICENSE`).

@@ -1,16 +1,27 @@
 PY := .venv/bin/python
+PORT ?= 8000
+# The first Python on PATH that is 3.12 or newer (macOS ships 3.9 as python3).
+PYTHON ?= $(shell for p in python3.14 python3.13 python3.12 python3; do \
+	command -v $$p >/dev/null 2>&1 && $$p -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null && { echo $$p; break; }; done)
 
 .PHONY: setup run test lint live docker
 
-setup:  ## Python >= 3.12: venv, dependencies, .env, database (SQLite) loaded from the committed data
-	@command -v uv >/dev/null && uv venv --python 3.12 .venv || python3 -m venv .venv
-	@$(PY) -c 'import sys; assert sys.version_info >= (3, 12), "Python 3.12+ is required (Django 6.1)"'
-	@command -v uv >/dev/null && uv pip install --python $(PY) -r requirements-dev.txt || $(PY) -m pip install -r requirements-dev.txt
+setup:  ## venv, dependencies, .env, database (SQLite) loaded from the committed data
+	@if [ -x $(PY) ] && ! $(PY) -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then \
+		echo "Removing .venv: it was built with Python older than 3.12"; rm -rf .venv; fi
+	@if [ ! -x $(PY) ]; then \
+		if command -v uv >/dev/null 2>&1; then uv venv --python 3.12 .venv; \
+		elif [ -n "$(PYTHON)" ]; then echo "Using $(PYTHON)"; $(PYTHON) -m venv .venv; \
+		else echo "Python 3.12+ not found. Install uv (https://docs.astral.sh/uv/) or Python 3.12+ (python.org), then run make setup again."; exit 1; fi; fi
+	@if command -v uv >/dev/null 2>&1; then uv pip install -q --python $(PY) -r requirements-dev.txt; \
+		else $(PY) -m pip install -q -r requirements-dev.txt; fi
 	@test -f .env || cp .env.example .env
 	$(PY) manage.py migrate
+	@echo; echo "Ready. Start the server with 'make run', then open http://localhost:$(PORT)/map"
 
 run:
-	$(PY) manage.py runserver 8000
+	@test -x $(PY) || { echo "Run 'make setup' first."; exit 1; }
+	$(PY) manage.py runserver $(PORT)
 
 test:
 	$(PY) -m pytest
