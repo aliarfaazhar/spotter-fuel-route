@@ -8,31 +8,60 @@ import respx
 from fuel.services import routing
 
 START, END = (41.0, -87.6), (41.0, -96.0)
-ORS_URL = "https://api.heigit.org/openrouteservice/v2/directions/driving-hgv/geojson"
+ORS_URL = "https://api.heigit.org/openrouteservice/v2/directions/driving-hgv/json"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/"
 
 
 def line(start=START, end=END, n=200):
     lons = np.linspace(start[1], end[1], n)
-    return [[float(lon), start[0]] for lon in lons]  # GeoJSON order: [lon, lat]
+    return [[float(lon), start[0]] for lon in lons]  # [lon, lat], the order providers use for coordinates
+
+
+def encode_polyline(lonlat, precision):
+    """Google's polyline encoding of [lon, lat] points: the reference algorithm, independent of the decoder."""
+    out, prev = [], (0, 0)
+    for lon, lat in lonlat:
+        point = (round(lat * 10**precision), round(lon * 10**precision))
+        for value, last in zip(point, prev, strict=True):
+            v = value - last
+            v = ~(v << 1) if v < 0 else v << 1
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1F)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        prev = point
+    return "".join(out)
 
 
 def ors_body(coords=None, meters=708_000.0):
-    return {
-        "features": [
-            {
-                "geometry": {"coordinates": coords or line()},
-                "properties": {"summary": {"distance": meters, "duration": 25_000.0}},
-            }
-        ]
-    }
+    geometry = encode_polyline(coords or line(), 5)
+    return {"routes": [{"geometry": geometry, "summary": {"distance": meters, "duration": 25_000.0}}]}
 
 
 def osrm_body(coords=None, meters=708_000.0):
-    return {
-        "code": "Ok",
-        "routes": [{"geometry": {"coordinates": coords or line()}, "distance": meters, "duration": 25_000.0}],
-    }
+    geometry = encode_polyline(coords or line(), 6)
+    return {"code": "Ok", "routes": [{"geometry": geometry, "distance": meters, "duration": 25_000.0}]}
+
+
+def test_decode_polyline_matches_googles_example():
+    # https://developers.google.com/maps/documentation/utilities/polylinealgorithm
+    coords = routing.decode_polyline("_p~iF~ps|U_ulLnnqC_mqNvxq`@", 5)
+    assert np.allclose(coords, [[38.5, -120.2], [40.7, -120.95], [43.252, -126.453]])
+
+
+@pytest.mark.parametrize("precision", [5, 6])
+def test_decode_polyline_round_trips(precision):
+    rng = np.random.default_rng(precision)
+    lats, lons = rng.uniform(25, 49, 300), rng.uniform(-124, -67, 300)
+    pts = [[float(lon), float(lat)] for lat, lon in zip(lats, lons, strict=True)]
+    coords = routing.decode_polyline(encode_polyline(pts, precision), precision)
+    assert np.allclose(coords, [[lat, lon] for lon, lat in pts], atol=10**-precision)
+
+
+@pytest.mark.parametrize("bad", ["", "_p~iF~ps|U_", "_p~iF", "ab c", "é", None, 12, "~~~~~~~~~~~~~~?"])
+def test_decode_polyline_rejects_malformed_input(bad):
+    with pytest.raises(ValueError):
+        routing.decode_polyline(bad, 5)
 
 
 @pytest.fixture
@@ -66,6 +95,7 @@ def test_osrm_waypoints_in_the_url():
     mock = respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
     routing.fetch_route(START, END, via=((43.0, -90.0),))
     assert mock.calls.last.request.url.path.endswith("/-87.6,41.0;-90.0,43.0;-96.0,41.0")
+    assert mock.calls.last.request.url.params["geometries"] == "polyline6"  # 1e-6 precision, unlike ORS's 1e-5
 
 
 def test_no_key_uses_osrm():
@@ -113,9 +143,9 @@ def test_live_osrm():
     "response",
     [
         httpx.Response(403, text="<html>blocked</html>"),
-        httpx.Response(
-            200, json={"code": "Ok", "routes": [{"geometry": {"coordinates": []}, "distance": 1, "duration": 1}]}
-        ),
+        httpx.Response(200, json={"code": "Ok", "routes": [{"geometry": "", "distance": 1, "duration": 1}]}),
+        httpx.Response(200, json={"code": "Ok", "routes": [{"geometry": "_p~iF~ps|U", "distance": 1, "duration": 1}]}),
+        httpx.Response(200, json={"code": "Ok", "routes": [{"geometry": {"coordinates": []}, "distance": 1}]}),
         httpx.Response(200, json={"code": "Ok", "routes": [{}]}),
         httpx.Response(200, text="not json"),
     ],

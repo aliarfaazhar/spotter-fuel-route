@@ -2,7 +2,7 @@
 
 OpenRouteService (truck profile) when ORS_API_KEY is set, otherwise the keyless public OSRM server, so the
 project runs with zero signup. If ORS is down or times out we make one fallback call to OSRM.
-Providers speak GeoJSON [lon, lat]; everything leaving this module is (lat, lon).
+Both send the route as an encoded polyline (lat, lon), a sixth of the size of GeoJSON.
 """
 
 import logging
@@ -43,11 +43,35 @@ class ProviderDown(RoutingError):
     """Network error, timeout or 5xx: worth one fallback attempt."""
 
 
-def _client(read_timeout: float) -> httpx.Client:
-    timeout = httpx.Timeout(read_timeout, connect=settings.ROUTING["CONNECT_TIMEOUT"])
-    # retries=1 covers connection failures only (the request never reached the server), never a sent request.
-    transport = httpx.HTTPTransport(retries=1)
-    return httpx.Client(timeout=timeout, transport=transport, headers={"User-Agent": "spotter-fuel-route/1.0"})
+# One client per process, so back-to-back requests reuse the open TLS connection (~0.3 s each).
+# retries=1 covers connection failures only (the request never reached the server), never a sent request.
+_http = httpx.Client(transport=httpx.HTTPTransport(retries=1), headers={"User-Agent": "spotter-fuel-route/1.0"})
+
+
+def _timeout(read_timeout: float) -> httpx.Timeout:
+    return httpx.Timeout(read_timeout, connect=settings.ROUTING["CONNECT_TIMEOUT"])
+
+
+def decode_polyline(encoded: str, precision: int) -> np.ndarray:
+    """Decode a Google encoded polyline into an (N, 2) array of (lat, lon).
+
+    Providers send the route this way at a sixth of the size of GeoJSON, which roughly halves the download.
+    """
+    if not isinstance(encoded, str) or not encoded.isascii():
+        raise ValueError("polyline must be an ASCII string")
+    chunks = np.frombuffer(encoded.encode(), dtype=np.uint8).astype(np.int64) - 63
+    if chunks.size == 0 or chunks.min() < 0 or chunks.max() > 63 or chunks[-1] >= 0x20:
+        raise ValueError("malformed polyline")
+    last = chunks < 0x20  # a chunk without the continuation bit ends a value
+    starts = np.flatnonzero(np.r_[True, last[:-1]])
+    position = np.arange(chunks.size) - np.repeat(starts, np.diff(np.r_[starts, chunks.size]))
+    if position.max() > 11:  # a value longer than any coordinate can be
+        raise ValueError("malformed polyline")
+    values = np.add.reduceat((chunks & 0x1F) << (5 * position), starts)
+    values = np.where(values & 1, ~(values >> 1), values >> 1)  # zigzag: the low bit is the sign
+    if values.size % 2:
+        raise ValueError("polyline has an odd number of values")
+    return np.cumsum(values.reshape(-1, 2), axis=0) / 10.0**precision
 
 
 def _json(resp: httpx.Response, provider: str) -> dict:
@@ -60,17 +84,17 @@ def _json(resp: httpx.Response, provider: str) -> dict:
     return payload
 
 
-def _route(coordinates, meters, seconds, provider: str) -> Route:
-    """Validate a provider's geometry ([lon, lat] pairs) and convert it to (lat, lon)."""
+def _route(polyline, precision: int, meters, seconds, provider: str) -> Route:
+    """Validate and decode a provider's route."""
     try:
-        arr = np.asarray(coordinates, dtype=float)[:, :2]
+        coords = decode_polyline(polyline, precision)
         distance = float(meters) / METERS_PER_MILE
         duration = float(seconds) / 3600.0
     except (TypeError, ValueError, IndexError) as exc:
         raise RoutingError(f"{provider} returned a malformed route") from exc
-    if len(arr) < 2 or not np.isfinite(arr).all():
+    if len(coords) < 2:
         raise RoutingError(f"{provider} returned a route without geometry")
-    return Route(coords=arr[:, ::-1].copy(), distance_miles=distance, duration_hours=duration, provider=provider)
+    return Route(coords=coords, distance_miles=distance, duration_hours=duration, provider=provider)
 
 
 def _ors(points: list[tuple[float, float]]) -> Route:
@@ -84,12 +108,12 @@ def _ors(points: list[tuple[float, float]]) -> Route:
         # never send "options" with driving-hgv: it switches ORS to a 100 km dynamic-weights limit
     }
     try:
-        with _client(cfg["ORS_READ_TIMEOUT"]) as client:
-            resp = client.post(
-                f"{cfg['ORS_BASE_URL']}/v2/directions/{profile}/geojson",
-                json=body,
-                headers={"Authorization": cfg["ORS_API_KEY"]},
-            )
+        resp = _http.post(
+            f"{cfg['ORS_BASE_URL']}/v2/directions/{profile}/json",  # /json: polyline geometry, /geojson: 6x larger
+            json=body,
+            headers={"Authorization": cfg["ORS_API_KEY"]},
+            timeout=_timeout(cfg["ORS_READ_TIMEOUT"]),
+        )
     except httpx.HTTPError as exc:
         raise ProviderDown(f"OpenRouteService unreachable: {type(exc).__name__}") from exc
 
@@ -109,9 +133,9 @@ def _ors(points: list[tuple[float, float]]) -> Route:
 
     provider = f"openrouteservice:{profile}"
     try:
-        feature = payload["features"][0]
-        summary = feature["properties"]["summary"]
-        return _route(feature["geometry"]["coordinates"], summary["distance"], summary["duration"], provider)
+        route = payload["routes"][0]
+        summary = route["summary"]
+        return _route(route["geometry"], 5, summary["distance"], summary["duration"], provider)
     except (KeyError, IndexError, TypeError) as exc:
         raise RoutingError("OpenRouteService returned a malformed route") from exc
 
@@ -120,8 +144,11 @@ def _osrm(points: list[tuple[float, float]]) -> Route:
     base = settings.ROUTING["OSRM_BASE_URL"]
     url = f"{base}/route/v1/driving/" + ";".join(f"{lon},{lat}" for lat, lon in points)
     try:
-        with _client(settings.ROUTING["OSRM_READ_TIMEOUT"]) as client:
-            resp = client.get(url, params={"overview": "full", "geometries": "geojson"})
+        resp = _http.get(
+            url,
+            params={"overview": "full", "geometries": "polyline6"},
+            timeout=_timeout(settings.ROUTING["OSRM_READ_TIMEOUT"]),
+        )
     except httpx.HTTPError as exc:
         raise ProviderDown(f"OSRM unreachable: {type(exc).__name__}") from exc
     if resp.status_code == 429:
@@ -135,7 +162,7 @@ def _osrm(points: list[tuple[float, float]]) -> Route:
         raise RoutingError(f"OSRM error: {payload.get('code', resp.status_code)}")
     try:
         route = payload["routes"][0]
-        return _route(route["geometry"]["coordinates"], route["distance"], route["duration"], "osrm:driving")
+        return _route(route["geometry"], 6, route["distance"], route["duration"], "osrm:driving")
     except (KeyError, IndexError, TypeError) as exc:
         raise RoutingError("OSRM returned a malformed route") from exc
 

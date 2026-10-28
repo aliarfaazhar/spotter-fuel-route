@@ -36,8 +36,8 @@ In a second terminal:
 curl "http://localhost:8000/api/route?start=Chicago,IL&finish=Houston,TX&include_route=false"
 ```
 
-You should get JSON with `fuel_stops` and `total_fuel_cost` in about 1–2 seconds; the same request again answers
-in milliseconds from the cache.
+You should get JSON with `fuel_stops` and `total_fuel_cost` in under a second; the same request again answers in
+milliseconds from the cache.
 
 Then open **http://localhost:8000/map** in a browser: type two places (suggestions appear as you type) or click an
 example such as *New York → LA*.
@@ -110,7 +110,7 @@ the request falls back to OSRM once.
 | A map of the route | `map.route` is the route as a GeoJSON line, included by default. `map.url` opens an interactive map, and every Postman request draws it in the *Visualize* tab |
 | Cost-effective fuel stops, 500-mile range | `fuel_stops`, chosen by an exact optimiser. "Optimal" here means the lowest fuel cost plus $10 per stop, so the plan doesn't stop to save a cent. `stop_cost=0` gives the pure cheapest plan, and `cheapest_possible_fuel_cost` is always shown next to it |
 | Total spent on fuel at 10 mpg | `total_fuel_cost` is the sum of the stop costs, to the cent, and `total_gallons` is the gallons bought. `trip_fuel_cost` is what all the fuel the trip burns is worth: the same figure when the tank starts empty, and with fuel already in the tank it values those gallons at the local listed price, so a full-tank trip doesn't show $0 |
-| Fast | A new route takes ~1.5 s, nearly all of it the routing API; our own work is ~30 ms (`meta.timings_ms`). A repeat is answered from the cached plan in ~10 ms. Under load in Docker (2 gunicorn workers, Redis): about 700 requests/s, median 14 ms at 10 concurrent clients, 73 ms at 50 |
+| Fast | A new route takes 0.2–0.5 s for most trips and ~1.3 s coast to coast, nearly all of it the routing API; our own work is ~30 ms (`meta.timings_ms`). The route is requested as an encoded polyline (a sixth of the size of GeoJSON) over a connection kept open between requests. A repeat is answered from the cached plan in ~10 ms. Under load in Docker (2 gunicorn workers, Redis): about 700 requests/s, median 14 ms at 10 concurrent clients, 73 ms at 50 |
 | One routing call is ideal | One routing call per new route and zero for a repeat. The only exception is a route the price list can't fuel, which takes one more call for a detour (two at most). `meta.external_api_calls` reports the count on every response |
 | Latest stable Django | Django 6.1.2 with Django REST Framework 3.18 |
 
