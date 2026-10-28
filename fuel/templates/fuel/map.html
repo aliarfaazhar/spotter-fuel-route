@@ -6,7 +6,7 @@
   <title>Fuel Route Planner</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer">
   <style>
-    :root { --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e4e4df; --accent:#1f6feb; --stop:#d9480f; }
+    :root { color-scheme:light dark; --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e4e4df; --accent:#1f6feb; --stop:#d9480f; }
     @media (prefers-color-scheme: dark) { :root { --bg:#141413; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94; --line:#33332f; --accent:#58a6ff; --stop:#ff8a4c; } }
     * { box-sizing: border-box; }
     body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--ink); display:grid; grid-template-columns:minmax(300px,380px) 1fr; height:100vh; }
@@ -16,6 +16,7 @@
     label { font-size:12px; color:var(--muted); display:grid; gap:3px; }
     input, select, button { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
     button { background:var(--accent); color:#fff; border:0; cursor:pointer; font-weight:600; }
+    button:disabled { opacity:.6; cursor:progress; }
     .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 14px; }
     .stat { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
     .stat b { display:block; font-size:18px; }
@@ -31,7 +32,9 @@
     .msg { padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--stop) 14%, transparent); margin-bottom:10px; }
     #map { height:100vh; }
     .pin { background:var(--stop); color:#fff; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; font-weight:700; font-size:12px; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.4); }
-    @media (max-width: 760px) { body { grid-template-columns:1fr; grid-template-rows:auto 60vh; height:auto; } #map { height:60vh; } aside { border-right:0; padding:16px; } }
+    @media (max-width: 760px) { body { grid-template-columns:1fr; grid-template-rows:55vh auto; height:auto; } #map { height:55vh; grid-row:1; } aside { grid-row:2; border-right:0; padding:16px; } }
+    /* after the base rules, so they win: white on the light dark-mode accents is too faint */
+    @media (prefers-color-scheme: dark) { button { background:#1f6feb; } .pin, li .n { color:#1d1d1b; } }
   </style>
 </head>
 <body>
@@ -61,26 +64,53 @@ const form = document.getElementById('f'), out = document.getElementById('out');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const usd = n => '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 
-const params = new URLSearchParams(location.search);
-for (const k of ['start', 'finish', 'start_fuel']) if (params.get(k)) form.elements[k].value = params.get(k);
+const usdPrice = p => '$' + Number(p).toFixed(3);  // the API keeps full precision; 3 dp is plenty to read
+const button = form.querySelector('button');
 
-async function plan() {
+function fillForm(params) {
+  for (const k of ['start', 'finish']) form.elements[k].value = params.get(k) || '';
+  const fuel = params.get('start_fuel') || 'empty', select = form.elements.start_fuel;
+  const miles = Number(fuel);
+  if (![...select.options].some(o => o.value === fuel) && fuel.trim() !== '' && miles > 0 && miles <= 500)
+    select.add(new Option(`${miles} mi in the tank`, fuel));
+  select.value = fuel;
+}
+fillForm(new URLSearchParams(location.search));
+
+let inflight = null;  // only the latest request may render
+
+async function plan(push = true) {
   const q = new URLSearchParams(new FormData(form));
-  history.replaceState(null, '', '?' + q);
-  out.innerHTML = '<p>Planning…</p>'; layer.clearLayers();
+  if (push && location.search !== '?' + q) history.pushState(null, '', '?' + q);
+  if (inflight) inflight.abort();
+  const ctrl = inflight = new AbortController();
+  out.innerHTML = '<p>Planning…</p>'; layer.clearLayers(); button.disabled = true;
   let res, data;
   try {
-    res = await fetch('/api/route?' + q);
+    res = await fetch('/api/route?' + q, {signal: ctrl.signal});
     data = await res.json();
   } catch (e) {
-    out.innerHTML = '<div class="msg">The server could not be reached or returned an unexpected response.</div>'; return;
+    if (ctrl.signal.aborted) return;
+    data = null;
+  } finally {
+    if (inflight === ctrl) { inflight = null; button.disabled = false; }
   }
+  if (ctrl.signal.aborted) return;
+  if (!data) { out.innerHTML = '<div class="msg">The server could not be reached or returned an unexpected response.</div>'; return; }
   if (!res.ok) {
     const err = data.error || {code: res.status, message: 'request failed'};
-    out.innerHTML = `<div class="msg"><b>${esc(err.code)}</b><br>${esc(err.message)}</div>`; return;
+    const fields = Object.entries(err.details || {}).filter(([, v]) => Array.isArray(v))
+      .map(([k, v]) => `${esc(k)}: ${esc(v.join(' '))}`).join('<br>');
+    out.innerHTML = `<div class="msg"><b>${esc(err.code)}</b><br>${esc(err.message)}${fields ? '<br>' + fields : ''}</div>`; return;
   }
   render(data);
 }
+
+window.addEventListener('popstate', () => {  // Back/Forward replays the plan in the URL
+  fillForm(new URLSearchParams(location.search));
+  if (form.elements.start.value && form.elements.finish.value) plan(false);
+  else { layer.clearLayers(); out.innerHTML = ''; }
+});
 
 function render(d) {
   // Route options the plan didn't take (e.g. the direct route when it's out of range on listed stations): dashed grey,
@@ -90,24 +120,25 @@ function render(d) {
   d.route_options.filter(o => o.gap && o.gap.route).forEach(o => L.geoJSON(o.gap.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--stop'), weight: 6}})
     .bindPopup(`No listed station for ${o.gap.miles} mi`).addTo(layer));
   const line = L.geoJSON(d.map.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--accent'), weight: 5, opacity: .85}}).addTo(layer);
-  L.marker([d.start.lat, d.start.lon]).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
-  L.marker([d.finish.lat, d.finish.lon]).bindPopup('<b>Finish</b><br>' + esc(d.finish.label)).addTo(layer);
+  L.marker([d.start.lat, d.start.lon], {zIndexOffset: -1000}).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
+  L.marker([d.finish.lat, d.finish.lon], {zIndexOffset: -1000}).bindPopup('<b>Finish</b><br>' + esc(d.finish.label)).addTo(layer);
   const where = s => s.listed ? `${esc(s.city)}, ${esc(s.state)} · ${esc(s.address)}` : 'Any station here (not in the price list)';
-  const bill = s => s.listed ? `$${s.price_per_gallon}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b>` : `${s.gallons} gal, unpriced`;
-  d.fuel_stops.forEach(s => L.marker([s.lat, s.lon], {icon: L.divIcon({className: '', html: `<div class="pin${s.listed ? '' : ' unlisted'}">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]})})
-    .bindPopup(`<b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b><br>${where(s)}<br>${bill(s)}<br>mile ${s.mile_marker}`).addTo(layer));
+  const bill = s => s.listed ? `${usdPrice(s.price_per_gallon)}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b>` : `${s.gallons} gal, unpriced`;
+  d.fuel_stops.forEach(s => L.marker([s.route_lat, s.route_lon], {icon: L.divIcon({className: '', html: `<div class="pin${s.listed ? '' : ' unlisted'}">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]}), zIndexOffset: 1000 + s.stop})
+    .bindPopup(`<b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b><br>${where(s)}<br>${bill(s)}<br>mile ${s.mile_marker}${s.listed && s.off_route_miles ? ` · station in town, ~${s.off_route_miles} mi off the route` : ''}`).addTo(layer));
   const bounds = line.getBounds();
   layer.eachLayer(l => l.getBounds && bounds.extend(l.getBounds()));  // include any other route options
   map.fitBounds(bounds, {padding: [30, 30]});
   out.innerHTML = `
+    <p class="trip"><b>${esc(d.start.label)}</b> → <b>${esc(d.finish.label)}</b></p>
     ${d.warnings.map(w => `<div class="msg">${esc(w.message)}</div>`).join('')}
     ${d.route_options.length > 1 ? `<ol class="options">${d.route_options.map(o => `<li class="${o.selected ? 'chosen' : ''}">
       <b>${o.selected ? '✓ ' : '✕ '}${esc(o.name)}</b> · ${o.distance_miles.toLocaleString()} mi<small>${esc(o.note)}</small></li>`).join('')}</ol>` : ''}
     <div class="stats">
-      <div class="stat"><span>Fuel cost</span><b>${usd(d.total_fuel_cost)}</b>${d.cost_is_complete ? '' : `<small>+ ${d.unpriced_gallons} gal unpriced</small>`}</div>
-      <div class="stat"><span>Distance</span><b>${d.distance_miles.toLocaleString()} mi</b></div>
-      <div class="stat"><span>Stops</span><b>${d.fuel_stops.length}</b></div>
-      <div class="stat"><span>Saved vs naive</span><b>${d.savings_vs_naive === null ? '–' : usd(d.savings_vs_naive)}</b></div>
+      <div class="stat"><span>Trip fuel cost</span><b>${d.trip_fuel_cost.usd === null ? '–' : usd(d.trip_fuel_cost.usd)}</b>${d.trip_fuel_cost.estimated_gallons ? `<small>incl. ${d.trip_fuel_cost.estimated_gallons} gal not bought at a listed stop${d.trip_fuel_cost.estimate_price_per_gallon === null ? ', unpriced' : `, at ~${usdPrice(d.trip_fuel_cost.estimate_price_per_gallon)}/gal`}</small>` : ''}</div>
+      <div class="stat"><span>Bought at stops</span><b>${usd(d.total_fuel_cost)}</b>${d.cost_is_complete ? '' : `<small>+ ${d.unpriced_gallons} gal unpriced</small>`}</div>
+      <div class="stat"><span>Distance</span><b>${d.distance_miles.toLocaleString()} mi</b><small>${d.trip_fuel_cost.gallons_used} gal at ${d.assumptions.miles_per_gallon} mpg</small></div>
+      <div class="stat"><span>Stops</span><b>${d.fuel_stops.length}</b>${d.savings_vs_naive ? `<small>${usd(d.savings_vs_naive)} cheaper than refuelling blind</small>` : ''}</div>
     </div>
     <ol>${d.fuel_stops.map(s => `<li><span class="n${s.listed ? '' : ' unlisted'}">${s.stop}</span><b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b>
       <small>${where(s)} · mile ${s.mile_marker}</small>
@@ -121,7 +152,7 @@ let suggestTimer, suggestSeq = 0;
 for (const name of ['start', 'finish']) form.elements[name].addEventListener('input', e => {
   clearTimeout(suggestTimer);
   const q = e.target.value.trim();
-  if (q.length < 2 || /^[\d\s,.-]+$/.test(q)) { places.innerHTML = ''; return; }  // ZIPs and lat,lon need no help
+  if (q.length < 2 || /^[\d\s,.()-]+$/.test(q)) { suggestSeq++; places.innerHTML = ''; return; }  // ZIPs and lat,lon need no help
   suggestTimer = setTimeout(async () => {
     const seq = ++suggestSeq;
     try {
@@ -133,7 +164,7 @@ for (const name of ['start', 'finish']) form.elements[name].addEventListener('in
 });
 
 form.addEventListener('submit', e => { e.preventDefault(); plan(); });
-if (form.elements.start.value && form.elements.finish.value) plan();
+if (form.elements.start.value && form.elements.finish.value) plan(false);
 </script>
 </body>
 </html>

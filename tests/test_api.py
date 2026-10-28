@@ -39,6 +39,12 @@ def test_plan_end_to_end(client, corridor, osrm):
     assert body["total_fuel_cost"] >= body["cheapest_possible_fuel_cost"]
     assert body["map"]["url"].startswith("http://testserver/map?")
     assert body["map"]["route"]["type"] == "LineString"  # the map of the route is in the response
+    assert body["trip_fuel_cost"]["usd"] == body["total_fuel_cost"]  # an empty start buys everything it burns
+    for s in stops:  # the map pins a stop where the route (the fixture's line along latitude 41) passes it
+        if s["mile_marker"] > 0:
+            assert s["route_lat"] == pytest.approx(41.0) and -96.0 <= s["route_lon"] <= -87.6
+        else:  # the fill-up before departure keeps its town position
+            assert (s["route_lat"], s["route_lon"]) == (s["lat"], s["lon"])
 
 
 def test_second_request_uses_the_route_cache(client, corridor, osrm):
@@ -72,6 +78,10 @@ def test_full_tank_short_trip(client, corridor, osrm):
     body = get(client, start="Chicago, IL", finish="Omaha, NE", start_fuel="full").json()
     assert body["assumptions"]["start_fuel"] == "full"
     assert body["fuel_stops"] == [] and body["total_fuel_cost"] == 0
+    trip = body["trip_fuel_cost"]  # nothing bought, but the trip still burns fuel worth something
+    assert trip["gallons_used"] == pytest.approx(body["distance_miles"] / 10, abs=0.01)
+    assert trip["estimated_gallons"] == trip["gallons_used"] and trip["usd"] > 0
+    assert trip["usd"] == pytest.approx(trip["gallons_used"] * trip["estimate_price_per_gallon"], abs=0.01)
 
 
 def test_post_body_works(client, corridor, osrm):
@@ -183,6 +193,7 @@ def test_no_station_near_the_start_buys_only_what_it_must_off_the_list(client, c
     assert not first["listed"] and first["mile_marker"] == 0
     assert 9 < first["gallons"] < 11  # just enough to reach the first listed station
     assert body["cost_is_complete"] is False and body["unpriced_gallons"] == first["gallons"]
+    assert body["trip_fuel_cost"]["usd"] > body["total_fuel_cost"]  # the unlisted gallons are valued too
 
 
 def test_routing_outage_is_a_502(client, corridor):
@@ -211,3 +222,81 @@ def test_unexpected_errors_are_json_500(client, corridor, monkeypatch):
     monkeypatch.setattr(views, "plan_trip", boom)
     resp = get(client, start="Chicago, IL", finish="Omaha, NE")
     assert resp.status_code == 500 and resp.json()["error"]["code"] == "internal_error"
+
+
+@pytest.mark.parametrize("path", ["/api/", "/api/route/", "/api/routes", "/api/places/x"])
+def test_unknown_api_paths_are_json_404(client, db, path):
+    resp = client.get(path)
+    assert resp.status_code == 404 and resp["Content-Type"].startswith("application/json")
+    assert resp.json()["error"]["code"] == "not_found"
+
+
+def test_forwarded_for_is_not_trusted_without_a_proxy(settings):
+    from rest_framework.test import APIRequestFactory
+
+    from fuel.throttling import AnonRateThrottleFailOpen
+
+    request = APIRequestFactory().get("/api/route", HTTP_X_FORWARDED_FOR="1.2.3.4", REMOTE_ADDR="9.9.9.9")
+    assert AnonRateThrottleFailOpen().get_ident(request) == "9.9.9.9"
+
+
+def test_blank_and_boolean_params(client, corridor, osrm):
+    ok = client.post(
+        API, {"start": "Chicago, IL", "finish": "Omaha, NE", "start_fuel": ""}, content_type="application/json"
+    )
+    assert ok.status_code == 200 and ok.json()["assumptions"]["start_fuel"] == "empty"
+    default = get(client, start="Chicago, IL", finish="Omaha, NE", stop_cost="").json()
+    assert default["assumptions"]["stop_cost_usd"] == 10
+    bad = client.post(
+        API, {"start": "Chicago, IL", "finish": "Omaha, NE", "stop_cost": True}, content_type="application/json"
+    )
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "invalid"
+
+
+def test_bare_number_is_not_sent_to_the_geocoder(client, corridor):
+    resp = get(client, start="123", finish="Omaha, NE")
+    assert resp.status_code == 400 and resp.json()["error"]["code"] == "unknown_location"
+
+
+def test_unknown_state_code_is_rejected_offline(client, corridor):
+    resp = get(client, start="Atlantis, ZZ", finish="Omaha, NE")
+    assert resp.status_code == 400 and resp.json()["error"]["code"] == "unknown_state"
+
+
+def test_san_francisco_is_on_land(db):
+    from fuel.services.datafiles import COORDINATE_FIXES, place_rows
+
+    fixed = {
+        (r["key"], r["state"]): (float(r["lat"]), float(r["lon"])) for r in place_rows() if r["key"] == "sanfrancisco"
+    }
+    assert fixed[("sanfrancisco", "CA")] == COORDINATE_FIXES[("sanfrancisco", "CA")]
+
+
+def test_part_full_tank_with_no_station_near_the_start_tops_up_off_the_list(client, corridor, osrm):
+    from fuel.models import Station
+
+    Station.objects.filter(opis_id=1).delete()  # the first listed station is ~98 mi in
+    body = get(client, start="Chicago, IL", finish="Omaha, NE", start_fuel="50").json()
+    first = body["fuel_stops"][0]
+    assert not first["listed"] and first["mile_marker"] == 0
+    assert 4 < first["gallons"] < 6  # 50 mi in the tank, ~98 mi to the first listed station
+
+
+def test_coordinates_far_from_any_road_are_rejected(client, corridor):
+    from fuel.models import ZipCode
+
+    ZipCode.objects.create(code="60000", lat=41.3, lon=-87.6)
+    respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
+    resp = get(client, start="41.3,-87.6", finish="Omaha, NE")  # the mocked route starts ~21 mi south
+    assert resp.status_code == 400 and resp.json()["error"]["code"] == "not_near_a_road"
+
+
+def test_repeat_trip_is_served_from_the_plan_cache(client, corridor, osrm):
+    first = get(client, start="Chicago, IL", finish="Omaha, NE").json()
+    again = get(client, start="chicago", finish="Omaha, NE").json()  # same point, typed differently
+    assert first["meta"]["plan_cache_hit"] is False
+    assert again["meta"]["plan_cache_hit"] is True and again["meta"]["external_api_calls"]["routing"] == 0
+    assert again["fuel_stops"] == first["fuel_stops"] and again["total_fuel_cost"] == first["total_fuel_cost"]
+    assert again["start"]["query"] == "chicago" and "start=chicago" in again["map"]["url"]
+    other = get(client, start="Chicago, IL", finish="Omaha, NE", stop_cost="0").json()
+    assert other["meta"]["plan_cache_hit"] is False  # different parameters, different plan

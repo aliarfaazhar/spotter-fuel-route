@@ -19,7 +19,7 @@ from fuel.models import Station
 
 from . import routing
 from .detour import ROAD_FACTORS, Waypoint, find_waypoints
-from .geometry import cumulative_miles, haversine_miles, simplify
+from .geometry import chord_to_miles, cumulative_miles, haversine_miles, simplify, to_xyz
 from .optimizer import Candidate, InfeasibleRoute, Purchase, naive_plan, plan_fuel_stops
 from .resolver import Point, resolve
 from .stations import RouteMatches, StationIndex, get_index, match_route
@@ -29,6 +29,9 @@ CENT = Decimal("0.01")
 GALLON = Decimal("0.001")
 ORIGIN_RADII_MILES = (10.0, 25.0)
 UNLISTED_PRICE = 1000.0
+OFF_ROAD_WARN_MILES, OFF_ROAD_REJECT_MILES = 2.0, 10.0
+ROUNDING_SLACK_GALLONS = Decimal("0.01")
+NEAREST_FOR_REFERENCE = 5
 UNLISTED_SPACING_MILES = 10.0
 
 
@@ -82,6 +85,27 @@ def get_route(start: Point, end: Point, via: tuple = ()) -> tuple[routing.Route,
     return stored, calls, False
 
 
+def _plan_cache_key(start: Point, finish: Point, start_fuel: StartFuel, stop_cost: float, include_route: bool):
+    ends = ":".join(f"{v:.5f}" for v in (*start.as_tuple(), *finish.as_tuple()))
+    params = f"{start_fuel.mode}:{start_fuel.miles:g}:{stop_cost:g}:{int(include_route)}"
+    return f"plan:v{settings.FUEL['ROUTE_CACHE_VERSION']}:{routing.provider_name()}:{ends}:{params}"
+
+
+def _cache_get(key):
+    try:
+        return cache.get(key)
+    except Exception:  # a cache outage must not take the API down
+        log.warning("plan cache unavailable; planning uncached", exc_info=True)
+        return None
+
+
+def _cache_set(key, value, ttl) -> None:
+    try:
+        cache.set(key, value, ttl)
+    except Exception:
+        log.warning("plan cache unavailable; not caching", exc_info=True)
+
+
 def _money(value: Decimal) -> Decimal:
     return value.quantize(CENT, rounding=ROUND_HALF_UP) + 0  # "+ 0" turns -0.00 into 0.00
 
@@ -131,15 +155,44 @@ def plan_trip(
     if haversine_miles(start.lat, start.lon, finish.lat, finish.lon) < 0.1:
         raise PlanError(400, "same_location", "start and finish are the same place")
 
+    query = {"start": start_text, "finish": finish_text}
+    if start_fuel.mode != "empty":
+        query["start_fuel"] = start_fuel.mode if start_fuel.mode == "full" else f"{start_fuel.miles:g}"
+    if stop_cost != cfg["STOP_COST_USD"]:
+        query["stop_cost"] = f"{stop_cost:g}"
+    map_url = f"{map_base_url}?{urlencode(query)}" if map_base_url else None
+
+    # A repeat of the same trip is answered from the finished plan: no routing, matching or optimising.
+    plan_key = _plan_cache_key(start, finish, start_fuel, stop_cost, include_route)
+    cached = _cache_get(plan_key)
+    if cached is not None:
+        timings["total"] = time.perf_counter() - t0
+        return cached | {
+            "start": start.to_dict(start_text),
+            "finish": finish.to_dict(finish_text),
+            "map": {**cached["map"], "url": map_url},
+            "meta": {
+                "routing_provider": cached["meta"]["routing_provider"],
+                "external_api_calls": {"routing": 0, "geocoding": calls["geocoding"]},
+                "route_cache_hit": True,
+                "plan_cache_hit": True,
+                "timings_ms": {k: round(v * 1000, 1) for k, v in timings.items()},
+            },
+        }
+
     t = time.perf_counter()
     route, calls["routing"], cache_hit = get_route(start, finish)
     timings["routing"] = time.perf_counter() - t
+    _check_snapping(start, route.coords[0], "start", warnings)
+    _check_snapping(finish, route.coords[-1], "finish", warnings)
 
     t = time.perf_counter()
     index = get_index()
     origin = _origin_station(index, start, start_fuel)
-    # With an empty tank and no listed station near the start, the first fill-up is bought off the list.
-    start_unlisted = start_fuel.mode == "empty" and origin is None
+    # No listed station near the start: the first fill-up (empty tank) or top-up (part-full tank) is bought off
+    # the list, only as much as it takes to reach a listed station.
+    near_start, _ = index.within(start.lat, start.lon, ORIGIN_RADII_MILES[-1])
+    start_unlisted = start_fuel.mode != "full" and origin is None and near_start.size == 0
     fuel_miles = start_fuel.miles if start_fuel.mode != "empty" else 0.0
 
     def attempt(r: routing.Route, via: tuple = ()) -> _Attempt:
@@ -163,7 +216,7 @@ def plan_trip(
     if direct.purchases is None:
         # The shortest route has a stretch no tank covers on listed stations: look for a detour that doesn't.
         t = time.perf_counter()
-        start_range = fuel_miles if fuel_miles > 0 else tank
+        start_range = tank if start_unlisted or fuel_miles <= 0 else fuel_miles
         tried: set[tuple] = set()
         for factor in ROAD_FACTORS:
             via = tuple(find_waypoints(start, finish, route, start_range, tank, factor))
@@ -203,15 +256,11 @@ def plan_trip(
     cheapest_cost = min(_listed_cost(cheapest), total_cost)
     unpriced = sum((gal for p, gal, _ in billed if _is_unlisted(p.candidate)), Decimal("0"))
     stops = _stops(billed, index, start, chosen.route, mpg)
+    trip_cost = _trip_fuel_cost(billed, total_cost, unpriced, chosen, index, start, mpg)
     options = _route_options(direct, detour, chosen, tank, include_route)
     warnings.extend(_warnings(direct, chosen, start_unlisted, billed, buffers[0], tank))
     timings["total"] = time.perf_counter() - t0
 
-    query = {"start": start_text, "finish": finish_text}
-    if start_fuel.mode != "empty":
-        query["start_fuel"] = start_fuel.mode if start_fuel.mode == "full" else f"{start_fuel.miles:g}"
-    if stop_cost != cfg["STOP_COST_USD"]:
-        query["stop_cost"] = f"{stop_cost:g}"
     response = {
         "start": start.to_dict(start_text),
         "finish": finish.to_dict(finish_text),
@@ -221,11 +270,12 @@ def plan_trip(
         "total_fuel_cost": total_cost,
         "total_gallons": float(sum((gal for _, gal, _ in billed), Decimal("0"))),
         "unpriced_gallons": float(unpriced),
+        "trip_fuel_cost": trip_cost,
         "cost_is_complete": unpriced == 0,
         "cheapest_possible_fuel_cost": cheapest_cost,
         "savings_vs_naive": _money(_listed_cost(naive) - total_cost) if naive is not None else None,
         "route_options": options,
-        "map": {"url": f"{map_base_url}?{urlencode(query)}" if map_base_url else None},
+        "map": {"url": map_url},
         "assumptions": {
             "vehicle_range_miles": tank,
             "miles_per_gallon": mpg,
@@ -240,11 +290,16 @@ def plan_trip(
             "routing_provider": chosen.route.provider,
             "external_api_calls": calls,
             "route_cache_hit": cache_hit,
+            "plan_cache_hit": False,
             "timings_ms": {k: round(v * 1000, 1) for k, v in timings.items()},
         },
     }
     if include_route:
         response["map"]["route"] = _geojson(chosen.route.coords)
+    ttl = cfg["ROUTE_CACHE_TTL_SECONDS"]
+    if chosen.route.provider != routing.provider_name():  # planned on a fallback route: keep it briefly
+        ttl = cfg["FALLBACK_ROUTE_CACHE_TTL_SECONDS"]
+    _cache_set(plan_key, response, ttl)
     log.info(
         "plan miles=%.0f stops=%d cost=%s unpriced_gal=%s detour=%s cache_hit=%s calls=%s ms=%s",
         chosen.route.distance_miles,
@@ -259,8 +314,80 @@ def plan_trip(
     return response
 
 
+def _trip_fuel_cost(billed, bought_usd: Decimal, unpriced: Decimal, chosen: "_Attempt", index, start, mpg) -> dict:
+    """What all the fuel the trip burns is worth, not just what's bought on the way.
+
+    total_fuel_cost is the money spent at listed stops. A trip that starts with fuel in the tank (or buys some
+    off the list) burns more than that; this values those gallons at a reference price so the trip has a cost.
+    """
+    detours = sum(2 * p.candidate.off for p, _, _ in billed if not isinstance(p.candidate.key, tuple))
+    used = (Decimal(repr((chosen.route.distance_miles + detours) / mpg))).quantize(GALLON, rounding=ROUND_HALF_UP)
+    bought = sum((gal for _, gal, _ in billed), Decimal("0"))
+    from_tank = used - bought
+    if from_tank < ROUNDING_SLACK_GALLONS:  # per-stop rounding can leave a stray 0.001 gal
+        from_tank = Decimal("0")
+    estimated = from_tank + unpriced
+    out = {
+        "usd": bought_usd,
+        "gallons_used": float(used),
+        "bought_at_stops_usd": bought_usd,
+        "estimated_gallons": float(estimated),
+        "estimate_price_per_gallon": None,
+        "estimate_basis": None,
+    }
+    if estimated == 0:
+        return out
+    price, basis = _reference_price(index, start, chosen)
+    if price is None:
+        out["usd"] = None
+        return out
+    out |= {
+        "usd": _money(bought_usd + estimated * Decimal(repr(price))),
+        "estimate_price_per_gallon": price,
+        "estimate_basis": basis,
+    }
+    return out
+
+
+def _reference_price(index: StationIndex, start: Point, chosen: "_Attempt") -> tuple[float | None, str | None]:
+    """The price used for fuel the plan doesn't buy at a listed stop: near the start, else typical on the route."""
+    near_idx, _ = index.within(start.lat, start.lon, ORIGIN_RADII_MILES[-1])
+    if near_idx.size:
+        basis = f"cheapest listed station within {ORIGIN_RADII_MILES[-1]:g} mi of the start"
+        return round(float(index.price[near_idx].min()), 3), basis
+    on_route = chosen.matches.station_idx[chosen.matches.off_route_miles <= (chosen.buffer or 0)]
+    if on_route.size:
+        return round(float(np.median(index.price[on_route])), 3), "median listed price along the route"
+    if len(index):  # nothing listed nearby at all (most of California): the closest listed stations, wherever
+        k = min(NEAREST_FOR_REFERENCE, len(index))
+        dist, idx = index.tree.query(to_xyz(start.lat, start.lon)[0], k=k)
+        idx, far = np.atleast_1d(idx), float(chord_to_miles(np.atleast_1d(dist).max()))
+        return round(
+            float(np.median(index.price[idx])), 3
+        ), f"median of the {k} nearest listed stations ({far:.0f} mi away at most)"
+    return None, None
+
+
+def _check_snapping(point: Point, on_road: np.ndarray, which: str, warnings: list) -> None:
+    """A typed lat,lon in a lake gets snapped to the nearest road by the router; say so, or refuse if it's far."""
+    if point.resolved_by not in ("coordinates", "geocoder"):
+        return
+    moved = float(haversine_miles(point.lat, point.lon, on_road[0], on_road[1]))
+    if moved > OFF_ROAD_REJECT_MILES:
+        raise PlanError(
+            400,
+            "not_near_a_road",
+            f"the {which} is {moved:.0f} mi from the nearest road; is it on land?",
+            {which: moved},
+        )
+    if moved > OFF_ROAD_WARN_MILES:
+        warnings.append(
+            {"code": "moved_to_road", "message": f"the {which} was moved {moved:.1f} mi to the nearest road"}
+        )
+
+
 def _geojson(coords: np.ndarray) -> dict:
-    line = simplify(coords)
+    line = simplify(coords, tolerance_deg=0.0003)  # ~30 m: follows the road at street zoom (NYC->LA ~75 KB)
     return {"type": "LineString", "coordinates": [[round(lon, 5), round(lat, 5)] for lat, lon in line]}
 
 
@@ -314,9 +441,9 @@ def _route_options(direct: _Attempt, detour: _Attempt | None, chosen: _Attempt, 
         g = direct.gap
         first |= {
             "status": "out_of_range" if chosen is not direct else "unlisted_fuel_needed",
-            "note": f"Shortest route, but out of range on listed stations: none between mile "
-            f"{g.stranded_at_mile:.0f} and mile {g.next_point_mile:.0f} ({g.gap_miles:.0f} mi; a tank covers "
-            f"{tank:g} mi)",
+            "note": f"Shortest route, but out of range on listed stations: between mile {g.stranded_at_mile:.0f} "
+            f"and mile {g.next_point_mile:.0f} no listed station is in range ({g.gap_miles:.0f} mi of road, plus the "
+            f"drive off it to the stations; a tank covers {tank:g} mi)",
             "gap": _gap_dict(direct, tank, include),
         }
     options = [first]
@@ -341,9 +468,9 @@ def _warnings(direct: _Attempt, chosen: _Attempt, start_unlisted: bool, billed, 
         out.append(
             {
                 "code": "detour_for_fuel_coverage",
-                "message": f"the direct route has no listed station between mile {g.stranded_at_mile:.0f} and "
-                f"mile {g.next_point_mile:.0f}, more than a tank ({tank:g} mi); this plan goes via "
-                f"{' and '.join(w.label for w in chosen.via)} "
+                "message": f"on the direct route, no listed station is in range between mile "
+                f"{g.stranded_at_mile:.0f} and mile {g.next_point_mile:.0f} (a tank covers {tank:g} mi); "
+                f"this plan goes via {' and '.join(w.label for w in chosen.via)} "
                 f"(+{chosen.route.distance_miles - direct.route.distance_miles:.0f} mi)",
             }
         )
@@ -420,6 +547,8 @@ def _stops(billed, index: StationIndex, start: Point, route: routing.Route, mpg:
             lat = float(np.interp(p.candidate.mile, cum, route.coords[:, 0]))
             lon = float(np.interp(p.candidate.mile, cum, route.coords[:, 1]))
             stop |= {
+                "route_lat": round(lat, 6),
+                "route_lon": round(lon, 6),
                 "name": None,
                 "address": None,
                 "city": None,
@@ -437,6 +566,16 @@ def _stops(billed, index: StationIndex, start: Point, route: routing.Route, mpg:
             s = stations[int(index.ids[_station_idx(p.candidate.key)])]
             is_origin = isinstance(p.candidate.key, tuple)
             off = haversine_miles(start.lat, start.lon, s.place.lat, s.place.lon) if is_origin else p.candidate.off
+            # lat/lon is the station's town; route_lat/lon is where the route passes it (the exit to take).
+            # The fill-up before departure is near the start, not on the route, so it keeps the town.
+            on_route = (
+                (s.place.lat, s.place.lon)
+                if is_origin
+                else (
+                    float(np.interp(p.candidate.mile, cum, route.coords[:, 0])),
+                    float(np.interp(p.candidate.mile, cum, route.coords[:, 1])),
+                )
+            )
             stop |= {
                 "opis_id": s.opis_id,
                 "name": s.name,
@@ -447,6 +586,8 @@ def _stops(billed, index: StationIndex, start: Point, route: routing.Route, mpg:
                 "exit": s.exit_number or None,
                 "lat": round(s.place.lat, 6),
                 "lon": round(s.place.lon, 6),
+                "route_lat": round(on_route[0], 6),
+                "route_lon": round(on_route[1], 6),
                 "off_route_miles": round(float(off), 1) + 0.0,
                 "price_per_gallon": float(s.price.normalize()),
                 "cost": cost,
