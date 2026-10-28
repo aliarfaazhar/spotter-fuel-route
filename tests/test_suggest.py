@@ -20,3 +20,9 @@ def test_normalised_names_and_state_filter(client, db):
 
 def test_too_short_is_empty(client, db):
     assert client.get("/api/places", {"q": "c"}).json()["results"] == []
+
+
+def test_places_with_no_road_are_not_suggested(client, db):
+    make_place("Juneau", "AK", 58.30, -134.42, population=32_000)
+    make_place("Junction City", "KS", 39.03, -96.83, population=22_000)
+    assert client.get("/api/places", {"q": "jun"}).json()["results"] == ["Junction City, KS"]

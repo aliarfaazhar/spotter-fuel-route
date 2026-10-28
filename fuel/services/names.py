@@ -122,8 +122,10 @@ def strip_census_suffix(name: str) -> str:
 
 
 def place_key(name: str) -> str:
-    """'St. Louis' -> 'saintlouis'; 'La Grange' == 'LaGrange'; "O'Neill" -> 'oneill'."""
+    """'St. Louis' -> 'saintlouis'; 'La Grange' == 'LaGrange'; "Lee's Summit" == 'Lees Summit'."""
     text = _ascii(name).lower().replace("&", " and ")
+    text = re.sub(r"['`]", "", text)  # apostrophes join ("lee's" -> "lees"), so a lone "s" never becomes "south"
+    text = re.sub(r"\b(?:[a-z]\.){2,}", lambda m: m.group(0).replace(".", ""), text)  # "n.y.c." -> "nyc"
     tokens = re.findall(r"[a-z0-9]+", text)
     return "".join(_TOKEN_MAP.get(t, t) for t in tokens)
 
@@ -131,8 +133,13 @@ def place_key(name: str) -> str:
 def census_aliases(raw_name: str) -> list[str]:
     """Display names a Census NAME should be findable by (e.g. 'Nashville-Davidson ...' -> also 'Nashville')."""
     base = strip_census_suffix(raw_name)
-    # Keep the unstripped name too: a few NAMEs end in a real word ("Carson City").
-    names = [base, re.sub(r"\s*\(balance\)\s*$", "", raw_name.strip(), flags=re.I)]
+    full = re.sub(r"\s*\(balance\)\s*$", "", raw_name.strip(), flags=re.I)
+    names = [base]
+    # Keep the unstripped name only when the "suffix" is part of the real name: Census writes its own area
+    # descriptions in lower case ("Mexico city") or capitals ("Yellowstone CCD"), real words in title case
+    # ("Carson City").
+    if full != base and full[len(base) :].strip().istitle():
+        names.append(full)
     for sep in ("-", "/"):
         if sep in base:
             names.append(base.split(sep)[0].strip())

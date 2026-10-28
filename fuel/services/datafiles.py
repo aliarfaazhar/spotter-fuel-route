@@ -5,7 +5,7 @@ import gzip
 import io
 from collections.abc import Iterator
 from decimal import Decimal
-from itertools import batched
+from itertools import batched, chain
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -29,10 +29,19 @@ def _rows(path: Path) -> Iterator[dict]:
         yield from csv.DictReader(fh)
 
 
+# Census "internal points" that land somewhere useless for routing, corrected to the city centre.
+COORDINATE_FIXES = {
+    ("sanfrancisco", "CA"): (37.779259, -122.419329),  # the Census point is on the Farallon Islands; City Hall
+    ("anchorage", "AK"): (61.217381, -149.863129),  # the municipality's point is 19 mi east of downtown
+}
+
+
 def place_rows() -> Iterator[dict]:
-    yield from _rows(PLACES)
-    yield from _rows(PLACES_EXTRA)
-    yield from _rows(PLACES_MANUAL)
+    for row in chain(_rows(PLACES), _rows(PLACES_EXTRA), _rows(PLACES_MANUAL)):  # streamed
+        fix = COORDINATE_FIXES.get((row["key"], row["state"]))
+        if fix:
+            row = {**row, "lat": str(fix[0]), "lon": str(fix[1])}
+        yield row
 
 
 def zip_rows() -> Iterator[dict]:

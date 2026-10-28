@@ -12,6 +12,7 @@ import threading
 from fuel.models import Place
 
 from .names import place_key, state_code
+from .resolver import ISLANDS
 
 NO_ROAD_TO_MAINLAND = ("HI", "PR", "VI", "GU", "MP", "AS")  # the planner rejects these; don't suggest them
 
@@ -32,11 +33,16 @@ def _load() -> tuple[list[str], list[tuple[int, str]]]:
                 rows = sorted(
                     Place.objects.filter(population__gt=0)
                     .exclude(state__in=NO_ROAD_TO_MAINLAND)
-                    .values_list("key", "population", "name", "state"),
+                    .values_list("key", "population", "name", "state", "lat", "lon"),
                     key=lambda r: r[0],
                 )
+                rows = [r for r in rows if not _on_an_island(r[4], r[5])]
                 _entries = ([r[0] for r in rows], [(r[1], f"{r[2]}, {r[3]}") for r in rows])
     return _entries
+
+
+def _on_an_island(lat: float, lon: float) -> bool:
+    return any(a <= lat <= b and c <= lon <= d for a, b, c, d in ISLANDS.values())
 
 
 def suggest(text: str, limit: int = 8) -> list[str]:

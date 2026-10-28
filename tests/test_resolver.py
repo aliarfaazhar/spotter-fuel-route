@@ -43,10 +43,19 @@ def test_ambiguous_city_lists_candidates(corridor):
     assert {"Springfield, IL", "Springfield, MO"} <= set(exc.value.candidates)
 
 
+LANDMARK = {
+    "lat": "41.01",  # next to the corridor fixture's ZIPs
+    "lon": "-87.61",
+    "name": "Millennium Park",
+    "category": "leisure",
+    "importance": 0.52,
+    "display_name": "Millennium Park, Chicago, Illinois, United States",
+    "address": {"city": "Chicago", "ISO3166-2-lvl4": "US-IL"},
+}
+
+
 def test_unknown_text_uses_one_geocoder_call(corridor):
-    respx.get("https://nominatim.openstreetmap.org/search").mock(
-        return_value=httpx.Response(200, json=[{"lat": "41.01", "lon": "-87.61", "display_name": "Somewhere, IL"}])
-    )
+    respx.get("https://nominatim.openstreetmap.org/search").mock(return_value=httpx.Response(200, json=[LANDMARK]))
     point, calls = resolve("The Bean, Millennium Park")
     assert calls == 1 and point.resolved_by == "geocoder"
 
@@ -99,7 +108,7 @@ def test_islands_are_rejected_offline(corridor):
 
 def test_geocoder_answers_are_cached(corridor):
     route = respx.get("https://nominatim.openstreetmap.org/search").mock(
-        return_value=httpx.Response(200, json=[{"lat": "41.01", "lon": "-87.61", "display_name": "Somewhere, IL"}])
+        return_value=httpx.Response(200, json=[LANDMARK])
     )
     assert resolve("The Bean, Millennium Park")[1] == 1
     assert resolve("The Bean, Millennium Park")[1] == 0
@@ -111,3 +120,114 @@ def test_geocoder_outage_is_a_503_not_unknown_location(corridor):
     with pytest.raises(ResolveError) as exc:
         resolve("Some Street Somewhere")
     assert (exc.value.code, exc.value.status) == ("geocoder_unavailable", 503)
+
+
+@pytest.mark.parametrize(
+    ("text", "hit"),
+    [
+        ("Tokyo", {"name": "Tokyo", "category": "amenity", "importance": 0.0001, "address": {"city": "San Antonio"}}),
+        (
+            "Washington, WA",
+            {"name": "Washougal", "category": "place", "importance": 0.4, "address": {"town": "Washougal"}},
+        ),
+        ("Kansas", {"name": "Kansas", "addresstype": "state", "category": "boundary", "importance": 0.8}),
+    ],
+)
+def test_geocoder_guesses_that_dont_match_the_input_are_rejected(corridor, text, hit):
+    hit = {"lat": "40.0", "lon": "-95.0", "display_name": "x", **hit}
+    respx.get("https://nominatim.openstreetmap.org/search").mock(return_value=httpx.Response(200, json=[hit]))
+    with pytest.raises(ResolveError) as exc:
+        resolve(text)
+    assert exc.value.code in ("unknown_location", "too_broad")
+
+
+@pytest.mark.parametrize(
+    ("text", "code"),
+    [
+        ("USA", "too_broad"),
+        ("Texas", "too_broad"),
+        ("TX", "too_broad"),
+        (", IL", "too_broad"),
+        ("41.88,-87.63,", "invalid_coordinates"),
+        ("1000,1", "invalid_coordinates"),
+        ("0", "unknown_location"),
+        ("Montréal, Québec", "outside_usa"),
+        ("London, England", "outside_usa"),
+    ],
+)
+def test_inputs_rejected_offline(corridor, text, code):
+    with pytest.raises(ResolveError) as exc:
+        resolve(text)
+    assert exc.value.code == code
+
+
+def test_zip_that_contradicts_the_city_is_rejected(corridor):
+    from fuel.models import ZipCode
+
+    ZipCode.objects.create(code="90210", lat=34.1, lon=-118.4)
+    with pytest.raises(ResolveError) as exc:
+        resolve("Chicago, IL 90210")
+    assert exc.value.code == "conflicting_location"
+    assert resolve("Chicago, IL 60601")[0].resolved_by == "zip"
+
+
+def test_city_and_full_state_name_without_a_comma(corridor):
+    assert resolve("Omaha Nebraska")[0].label == "Omaha, NE"
+
+
+@pytest.mark.parametrize(("lat", "lon"), [(58.30, -134.42), (57.79, -152.41), (64.50, -165.41), (41.28, -70.10)])
+def test_places_with_no_road_to_the_mainland(corridor, lat, lon):
+    from fuel.models import ZipCode
+
+    ZipCode.objects.create(code="99999", lat=lat, lon=lon)
+    with pytest.raises(ResolveError) as exc:
+        resolve(f"{lat},{lon}")
+    assert exc.value.code == "not_reachable_by_road"
+
+
+def test_state_name_that_is_also_a_big_city(corridor):
+    from tests.conftest import make_place
+
+    make_place("New York", "NY", 40.66, -73.94, population=8_800_000)
+    make_place("Texas", "WI", 44.9, -89.6, population=1_000)
+    assert resolve("New York")[0].label == "New York, NY"
+    with pytest.raises(ResolveError) as exc:
+        resolve("Texas")
+    assert exc.value.code == "too_broad"
+
+
+@pytest.mark.parametrize("text", ["60601 1234", "60601, IL", "60601 IL", "IL 60601", "Chicago 60601"])
+def test_zip_anywhere_with_a_state_or_city(corridor, text):
+    point, calls = resolve(text)
+    assert point.resolved_by == "zip" and calls == 0
+
+
+def test_nicknames_and_dc_alone(corridor):
+    from tests.conftest import make_place
+
+    make_place("Washington", "DC", 38.9, -77.03, population=700_000)
+    for text in ("DC", "dc", "District of Columbia", "DC 20001"):
+        if text == "DC 20001":
+            from fuel.models import ZipCode
+
+            ZipCode.objects.create(code="20001", lat=38.91, lon=-77.02)
+        assert resolve(text)[0].lat == pytest.approx(38.9, abs=0.1), text
+
+
+@pytest.mark.parametrize("text", ["San Juan, PR", "Guam", "Charlotte Amalie, VI", "San Juan, Puerto Rico"])
+def test_territories_are_not_reachable_by_road(corridor, text):
+    with pytest.raises(ResolveError) as exc:
+        resolve(text)
+    assert exc.value.code == "not_reachable_by_road"
+
+
+def test_street_address_must_be_in_the_town_typed(corridor):
+    wrong_town = {
+        "lat": "41.01",
+        "lon": "-87.61",
+        "category": "highway",
+        "address": {"town": "Idaho City", "ISO3166-2-lvl4": "US-ID"},
+    }
+    respx.get("https://nominatim.openstreetmap.org/search").mock(return_value=httpx.Response(200, json=[wrong_town]))
+    with pytest.raises(ResolveError):
+        resolve("100 Main St, Boise")

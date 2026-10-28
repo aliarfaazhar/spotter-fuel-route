@@ -60,11 +60,16 @@ class Command(BaseCommand):
         best: dict[tuple[str, str], dict] = {}
 
         population: dict[tuple[str, str], int] = {}
+        # GeoNames says "New York City" where Census says "New York city" (a city named New York).
+        city_population: dict[tuple[str, str], int] = {}
 
         def offer(row: dict) -> None:
             if row["source"] == "geonames":
                 ident = (row["key"], row["state"])
                 population[ident] = max(population.get(ident, 0), row["population"])
+                if row["name"].endswith(" City"):
+                    short = (place_key(row["name"][: -len(" City")]), row["state"])
+                    city_population[short] = max(city_population.get(short, 0), row["population"])
             ident = (row["key"], row["state"])
             current = best.get(ident)
             if current is None or self._better(row, current):
@@ -88,6 +93,7 @@ class Command(BaseCommand):
                                 "population": "",
                                 "source": source,
                                 "alias": i > 0,
+                                "census_city": rec["NAME"].endswith(" city"),
                             }
                         )
 
@@ -118,6 +124,8 @@ class Command(BaseCommand):
         for ident, row in best.items():
             if not row["population"] and population.get(ident):
                 row["population"] = population[ident]
+            elif not row["population"] and row.get("census_city") and city_population.get(ident):
+                row["population"] = city_population[ident]
         rows = sorted(best.values(), key=lambda r: (r["state"], r["key"]))
         with datafiles.write_gz(out / "places.csv.gz") as fh:
             writer = csv.DictWriter(fh, fieldnames=FIELDS, extrasaction="ignore")
