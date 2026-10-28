@@ -8,7 +8,7 @@ import respx
 from fuel.services import routing
 
 START, END = (41.0, -87.6), (41.0, -96.0)
-ORS_URL = "https://api.openrouteservice.org/v2/directions/driving-hgv/geojson"
+ORS_URL = "https://api.heigit.org/openrouteservice/v2/directions/driving-hgv/geojson"
 OSRM_URL = "https://router.project-osrm.org/route/v1/driving/"
 
 
@@ -74,8 +74,9 @@ def test_no_key_uses_osrm():
     assert calls == 1 and route.provider == "osrm:driving"
 
 
-def test_ors_outage_falls_back_to_osrm_once(ors_key):
-    respx.post(ORS_URL).mock(return_value=httpx.Response(503))
+@pytest.mark.parametrize("status", [503, 429, 401, 403])  # outage, used-up quota, bad key
+def test_ors_failure_falls_back_to_osrm_once(ors_key, status):
+    respx.post(ORS_URL).mock(return_value=httpx.Response(status))
     respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
     route, calls = routing.fetch_route(START, END)
     assert calls == 2 and route.provider == "osrm:driving"
@@ -88,8 +89,9 @@ def test_ors_unroutable_points_map_to_no_route(ors_key, code):
         routing.fetch_route(START, END)
 
 
-def test_rate_limit(ors_key):
+def test_rate_limit_on_both_providers(ors_key):
     respx.post(ORS_URL).mock(return_value=httpx.Response(429))
+    respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(429))
     with pytest.raises(routing.RateLimited):
         routing.fetch_route(START, END)
 

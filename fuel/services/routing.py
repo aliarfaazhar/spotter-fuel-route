@@ -93,12 +93,13 @@ def _ors(points: list[tuple[float, float]]) -> Route:
     except httpx.HTTPError as exc:
         raise ProviderDown(f"OpenRouteService unreachable: {type(exc).__name__}") from exc
 
+    # A used-up daily quota or a revoked key shouldn't take the API down: OSRM can still route the trip.
     if resp.status_code == 429:
-        raise RateLimited("OpenRouteService rate limit reached, retry shortly")
+        raise ProviderDown("OpenRouteService rate limit or daily quota reached")
     if resp.status_code >= 500:
         raise ProviderDown(f"OpenRouteService returned {resp.status_code}")
     if resp.status_code in (401, 403):
-        raise RoutingError("OpenRouteService rejected the API key")
+        raise ProviderDown("OpenRouteService rejected the API key")
     payload = _json(resp, "OpenRouteService")
     if resp.status_code != 200:
         err = payload.get("error") if isinstance(payload.get("error"), dict) else {}
