@@ -60,7 +60,7 @@ def total_gallons(billed: Bill) -> Decimal:
 
 def geojson(coords: np.ndarray) -> dict:
     line = simplify(coords, tolerance_deg=0.0003)  # ~30 m: follows the road at street zoom (NYC->LA ~75 KB)
-    return {"type": "LineString", "coordinates": [[round(lon, 5), round(lat, 5)] for lat, lon in line]}
+    return {"type": "LineString", "coordinates": np.round(line[:, ::-1], 5).tolist()}  # [lon, lat], ~1 m
 
 
 def trip_fuel_cost(billed: Bill, bought_usd: Decimal, chosen: Attempt, index: StationIndex, start: Point) -> dict:

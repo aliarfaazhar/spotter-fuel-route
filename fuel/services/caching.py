@@ -28,3 +28,10 @@ def safe_add(key: str, value, timeout: float) -> bool:
         return cache.add(key, value, timeout)
     except Exception:
         return True
+
+
+def safe_delete(key: str) -> None:
+    try:
+        cache.delete(key)
+    except Exception:
+        log.warning("cache unavailable; not deleting (%s)", key.split(":", 1)[0], exc_info=True)

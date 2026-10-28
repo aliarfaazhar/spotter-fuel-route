@@ -38,28 +38,40 @@ def cumulative_miles(coords: np.ndarray, total_miles: float | None = None) -> np
 
 
 def simplify(coords: np.ndarray, tolerance_deg: float = 0.002) -> np.ndarray:
-    """Ramer-Douglas-Peucker on lat/lon (planar approximation is fine for display geometry)."""
+    """Ramer-Douglas-Peucker on lat/lon (planar approximation is fine for display geometry).
+
+    Splits every open segment of one level in a single vectorised pass instead of one segment at a time: the
+    same points are kept, without thousands of small numpy calls on a long route.
+    """
     n = len(coords)
     if n < 3:
         return coords
     keep = np.zeros(n, dtype=bool)
     keep[[0, -1]] = True
-    stack = [(0, n - 1)]
-    while stack:
-        start, end = stack.pop()
-        if end - start < 2:
-            continue
-        a, b = coords[start], coords[end]
-        seg = coords[start + 1 : end]
-        ab = b - a
-        norm = np.hypot(*ab)
-        if norm == 0:
-            dist = np.hypot(*(seg - a).T)
-        else:
-            dist = np.abs(ab[0] * (seg[:, 1] - a[1]) - ab[1] * (seg[:, 0] - a[0])) / norm
-        i = int(np.argmax(dist))
-        if dist[i] > tolerance_deg:
-            mid = start + 1 + i
-            keep[mid] = True
-            stack.extend([(start, mid), (mid, end)])
+    starts, ends = np.array([0]), np.array([n - 1])
+    while starts.size:
+        inner = ends - starts - 1  # points strictly between each segment's ends
+        open_ = inner > 0
+        starts, ends, inner = starts[open_], ends[open_], inner[open_]
+        if not starts.size:
+            break
+        first = np.cumsum(inner) - inner  # where each segment's points begin in the flat arrays below
+        seg = np.repeat(np.arange(starts.size), inner)
+        idx = np.repeat(starts + 1, inner) + np.arange(inner.sum()) - np.repeat(first, inner)
+        a = coords[starts][seg]
+        ab = (coords[ends] - coords[starts])[seg]
+        norm = np.hypot(ab[:, 0], ab[:, 1])
+        p = coords[idx]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            dist = np.abs(ab[:, 0] * (p[:, 1] - a[:, 1]) - ab[:, 1] * (p[:, 0] - a[:, 0])) / norm
+        same_ends = norm == 0
+        if same_ends.any():  # a loop back to its start: distance from that point instead
+            dist[same_ends] = np.hypot(*(p[same_ends] - a[same_ends]).T)
+        # The first farthest point of each segment (argmax semantics), split there if it's beyond tolerance.
+        is_max = dist == np.maximum.reduceat(dist, first)[seg]
+        far = np.minimum.reduceat(np.where(is_max, np.arange(dist.size), dist.size), first)
+        split = dist[far] > tolerance_deg
+        mids = idx[far[split]]
+        keep[mids] = True
+        starts, ends = np.concatenate([starts[split], mids]), np.concatenate([mids, ends[split]])
     return coords[keep]

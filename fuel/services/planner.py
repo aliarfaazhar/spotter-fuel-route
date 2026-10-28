@@ -13,7 +13,7 @@ import numpy as np
 from django.conf import settings
 
 from . import candidates, report, routing
-from .caching import safe_get, safe_set
+from .caching import safe_add, safe_delete, safe_get, safe_set
 from .detour import ROAD_FACTORS, Waypoint, find_waypoints
 from .geometry import haversine_miles, simplify
 from .optimizer import Candidate, InfeasibleRoute, Purchase, naive_plan, plan_fuel_stops
@@ -22,6 +22,10 @@ from .stations import RouteMatches, get_index, match_route
 
 log = logging.getLogger("fuel.planner")
 OFF_ROAD_WARN_MILES, OFF_ROAD_REJECT_MILES = 2.0, 10.0
+# How long a request waits for another one already fetching the same route, before fetching it itself.
+# Above the worst case for one fetch (ORS, then the OSRM fallback): see ROUTING timeouts.
+ROUTE_LOCK_SECONDS = 50.0
+ROUTE_LOCK_POLL_SECONDS = 0.05
 
 
 class PlanError(Exception):
@@ -58,6 +62,24 @@ def get_route(start: Point, end: Point, via: tuple = ()) -> tuple[routing.Route,
     if cached is not None:
         return cached, 0, True
 
+    # Many requests for the same new route at once (a popular lane, a load test) make one routing call:
+    # the first takes the lock and fetches, the rest wait for its result instead of calling the provider too.
+    lock = key + ":lock"
+    deadline = time.monotonic() + ROUTE_LOCK_SECONDS
+    while not safe_add(lock, 1, ROUTE_LOCK_SECONDS):
+        if time.monotonic() > deadline:
+            break  # the holder is stuck: fetch anyway rather than fail
+        time.sleep(ROUTE_LOCK_POLL_SECONDS)
+        cached = safe_get(key)
+        if cached is not None:
+            return cached, 0, True
+    try:
+        return _fetch_and_cache(key, start, end, via)
+    finally:
+        safe_delete(lock)  # on failure too, so a waiting request takes over at once
+
+
+def _fetch_and_cache(key: str, start: Point, end: Point, via: tuple) -> tuple[routing.Route, int, bool]:
     route, calls = routing.fetch_route(start.as_tuple(), end.as_tuple(), tuple(w.as_tuple() for w in via))
     # Cache a simplified line (~20 m tolerance): matching resamples every half mile, so nothing is lost.
     stored = routing.Route(

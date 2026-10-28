@@ -48,7 +48,8 @@ example such as *New York → LA*.
 2. With the server running, open any request and click **Send**. The collection's `base_url` variable is
    `http://localhost:8000`; change it on the collection's *Variables* tab if you use another port.
 3. Open the **Visualize** tab of the response to see the route and stops on a map. Each request also runs checks
-   (status, cost adds up, routing-call count) on the *Test Results* tab.
+   (expected status, cost adds up, routing-call count) on the *Test Results* tab. In a performance run, raise
+   `API_RATE_LIMIT` first: otherwise most requests get a 429 and fail the status check.
 
 ### Docker (PostgreSQL + Redis)
 
@@ -176,7 +177,7 @@ start/finish ──► resolve offline (city / ZIP / lat,lon) ──► route ca
 
 **Routing calls.**
 - Places are resolved offline, from Census and GeoNames files committed to the repo. That leaves the route as the only external call.
-- Two caches (Redis, or a file cache). The route is cached by its end points, so changing `stop_cost` or `start_fuel` never triggers a new routing call. The finished plan is cached by end points and parameters, so a repeat skips matching and optimising too.
+- Two caches (Redis, or a file cache). The route is cached by its end points, so changing `stop_cost` or `start_fuel` never triggers a new routing call. The finished plan is cached by end points and parameters, so a repeat skips matching and optimising too. Simultaneous requests for the same new route share one routing call: the first fetches it, the others wait for the cached result.
 - **Worst case:** an address the offline data can't place costs one geocoding call each for start and finish (cached for a day). An ORS outage, used-up daily quota or rejected key costs one OSRM fallback call. A route the price list can't fuel costs one or two detour calls.
 
 **Matching stations to the route.**
