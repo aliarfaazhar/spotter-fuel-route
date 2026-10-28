@@ -59,49 +59,55 @@
   ],
   "item": [
     {
-      "name": "NYC -> LA (open the Visualize tab)",
+      "name": "Plan a long route (map in the Visualize tab)",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=New York, NY&finish=Los Angeles, CA"
+        "url": "{{base_url}}/api/route?start=New York, NY&finish=Los Angeles, CA",
+        "description": "New York, NY to Los Angeles, CA: several fuel stops, savings vs. refuelling without comparing prices."
       }
     },
     {
-      "name": "Atlanta -> Denver (city names only)",
+      "name": "Plan with city names only, no state",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=Atlanta&finish=Denver"
+        "url": "{{base_url}}/api/route?start=Atlanta&finish=Denver",
+        "description": "Atlanta to Denver: a bare city name resolves to the largest place with that name."
       }
     },
     {
-      "name": "Short trip: Dallas -> Austin",
+      "name": "Plan a short trip (one fill-up)",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=Dallas, TX&finish=Austin, TX"
+        "url": "{{base_url}}/api/route?start=Dallas, TX&finish=Austin, TX",
+        "description": "Dallas, TX to Austin, TX: under one tank, so a single fill-up near the start."
       }
     },
     {
-      "name": "ZIP codes: 10001 -> 90012",
+      "name": "Plan from ZIP code to ZIP code",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=10001&finish=90012"
+        "url": "{{base_url}}/api/route?start=10001&finish=90012",
+        "description": "10001 (Manhattan) to 90012 (downtown Los Angeles), resolved offline."
       }
     },
     {
-      "name": "lat,lon + an address (resolved to its city)",
+      "name": "Plan from coordinates to a street address",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=40.7128,-74.0060&finish=1600 Pennsylvania Ave NW, Washington, DC"
+        "url": "{{base_url}}/api/route?start=40.7128,-74.0060&finish=1600 Pennsylvania Ave NW, Washington, DC",
+        "description": "40.7128,-74.0060 to 1600 Pennsylvania Ave NW, Washington, DC. The address costs one geocoding call the first time."
       }
     },
     {
-      "name": "Strict cheapest (stop_cost=0), full tank, no geometry",
+      "name": "Cheapest plan: no stop cost, full tank, no route geometry",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=New York, NY&finish=Los Angeles, CA&stop_cost=0&start_fuel=full&include_route=false"
+        "url": "{{base_url}}/api/route?start=New York, NY&finish=Los Angeles, CA&stop_cost=0&start_fuel=full&include_route=false",
+        "description": "stop_cost=0 ignores driver time per stop; start_fuel=full; include_route=false keeps the response small. New York to Los Angeles."
       }
     },
     {
-      "name": "POST body: Chicago -> Houston, 250 mi in the tank",
+      "name": "Plan with a JSON body (POST), part-full tank",
       "request": {
         "method": "POST",
         "header": [
@@ -114,42 +120,48 @@
           "mode": "raw",
           "raw": "{\"start\": \"Chicago, IL\", \"finish\": \"Houston, TX\", \"start_fuel\": \"250\"}"
         },
-        "url": "{{base_url}}/api/route"
+        "url": "{{base_url}}/api/route",
+        "description": "Chicago, IL to Houston, TX with 250 miles of fuel already in the tank."
       }
     },
     {
-      "name": "Detour: SF -> Seattle (direct I-5 is out of range on listed stations)",
+      "name": "Detour when the direct route can't be fuelled",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=San Francisco, CA&finish=Seattle, WA"
+        "url": "{{base_url}}/api/route?start=San Francisco, CA&finish=Seattle, WA",
+        "description": "San Francisco to Seattle: the price list has no station for 576 mi of I-5, so the plan detours through listed stations (route_options shows both)."
       }
     },
     {
-      "name": "No listed station near the start: San Diego -> Sacramento (fuel shown as unpriced)",
+      "name": "Unpriced fuel when no listed station is in range",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=San Diego, CA&finish=Sacramento, CA"
+        "url": "{{base_url}}/api/route?start=San Diego, CA&finish=Sacramento, CA",
+        "description": "San Diego to Sacramento: nothing listed near the start, so the first fuel is shown as unpriced and cost_is_complete is false."
       }
     },
     {
-      "name": "400: outside the USA",
+      "name": "Error: location outside the USA (400)",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=Toronto, Ontario&finish=Chicago, IL"
+        "url": "{{base_url}}/api/route?start=Toronto, Ontario&finish=Chicago, IL",
+        "description": "Toronto, Ontario is rejected before any external call."
       }
     },
     {
-      "name": "400: ambiguous city",
+      "name": "Error: ambiguous place name (400 with candidates)",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/route?start=Springfield&finish=Chicago, IL"
+        "url": "{{base_url}}/api/route?start=Springfield&finish=Chicago, IL",
+        "description": "Springfield exists in many states; the error lists candidates to choose from."
       }
     },
     {
-      "name": "Autocomplete: /api/places?q=san f (offline, no external call)",
+      "name": "Autocomplete place names",
       "request": {
         "method": "GET",
-        "url": "{{base_url}}/api/places?q=san f"
+        "url": "{{base_url}}/api/places?q=san f",
+        "description": "GET /api/places?q=san f: up to 8 matching places, biggest first, offline."
       }
     }
   ]
