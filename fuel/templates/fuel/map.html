@@ -4,87 +4,231 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fuel Route Planner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer">
   <style>
-    :root { color-scheme:light dark; --bg:#f7f7f5; --panel:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e4e4df; --accent:#1f6feb; --stop:#d9480f; }
-    @media (prefers-color-scheme: dark) { :root { --bg:#141413; --panel:#1f1f1d; --ink:#ececea; --muted:#9a9a94; --line:#33332f; --accent:#58a6ff; --stop:#ff8a4c; } }
-    * { box-sizing: border-box; }
-    body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif; background:var(--bg); color:var(--ink); display:grid; grid-template-columns:minmax(300px,380px) 1fr; height:100vh; }
-    aside { background:var(--panel); border-right:1px solid var(--line); padding:16px; overflow:auto; }
-    h1 { font-size:17px; margin:0 0 12px; }
-    form { display:grid; gap:8px; margin-bottom:14px; }
-    label { font-size:12px; color:var(--muted); display:grid; gap:3px; }
-    input, select, button { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--ink); }
-    button { background:var(--accent); color:#fff; border:0; cursor:pointer; font-weight:600; }
-    button:disabled { opacity:.6; cursor:progress; }
-    .stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:10px 0 14px; }
-    .stat { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
-    .stat b { display:block; font-size:18px; }
-    .stat span { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
-    ol { padding-left:0; list-style:none; margin:0; display:grid; gap:8px; }
-    li { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
-    li .n { display:inline-grid; place-items:center; width:20px; height:20px; border-radius:50%; background:var(--stop); color:#fff; font-size:11px; font-weight:700; margin-right:6px; }
-    li small { color:var(--muted); display:block; }
-    .unlisted { background:var(--muted) !important; }
-    .options { margin-bottom:12px; }
-    .options li.chosen { border-color:var(--accent); }
-    .stat small { display:block; font-size:11px; color:var(--muted); }
-    .msg { padding:8px 10px; border-radius:8px; background:color-mix(in srgb, var(--stop) 14%, transparent); margin-bottom:10px; }
-    #map { height:100vh; }
-    .pin { background:var(--stop); color:#fff; border-radius:50%; width:24px; height:24px; display:grid; place-items:center; font-weight:700; font-size:12px; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,.4); }
-    @media (max-width: 760px) { body { grid-template-columns:1fr; grid-template-rows:55vh auto; height:auto; } #map { height:55vh; grid-row:1; } aside { grid-row:2; border-right:0; padding:16px; } }
-    /* after the base rules, so they win: white on the light dark-mode accents is too faint */
-    @media (prefers-color-scheme: dark) { button { background:#1f6feb; } .pin, li .n { color:#1d1d1b; } }
+    :root { color-scheme:light dark;
+      --bg:#eef0f2; --panel:#ffffff; --ink:#111418; --muted:#6b7280; --faint:#9ca3af; --line:#eceef1; --field:#f4f5f7;
+      --accent:#2563eb; --accent-ink:#ffffff; --stop:#f97316; --go:#16a34a; --gap:#ef4444; --warn:#b45309; --warn-bg:#fffbeb;
+      --shadow:0 10px 30px rgba(17,20,24,.12), 0 2px 6px rgba(17,20,24,.06); }
+    @media (prefers-color-scheme: dark) { :root {
+      --bg:#0b0d10; --panel:#16191d; --ink:#f3f4f6; --muted:#9aa1ab; --faint:#6b7280; --line:#23272d; --field:#1e2227;
+      --accent:#3b82f6; --stop:#fb923c; --go:#22c55e; --gap:#f87171; --warn:#fbbf24; --warn-bg:#2a2210;
+      --shadow:0 10px 30px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.3); } }
+    * { box-sizing:border-box; }
+    html, body { height:100%; margin:0; }
+    body { font:14px/1.45 Inter,system-ui,-apple-system,"Segoe UI",sans-serif; background:var(--bg); color:var(--ink); -webkit-font-smoothing:antialiased; }
+    #map { position:fixed; inset:0; background:var(--bg); }
+    .panel { position:fixed; top:16px; left:16px; max-height:calc(100% - 32px); width:384px; z-index:1000; display:flex; flex-direction:column;
+             background:var(--panel); border-radius:18px; box-shadow:var(--shadow); overflow:hidden; }
+    .scroll { overflow:auto; }
+    .brand { display:flex; align-items:center; justify-content:space-between; padding:16px 18px 6px; }
+    .brand b { font-size:15px; font-weight:700; letter-spacing:-.01em; display:flex; align-items:center; gap:8px; }
+    .brand b::before { content:""; width:10px; height:10px; border-radius:3px; background:var(--accent); }
+    .brand span { font-size:12px; color:var(--faint); }
+
+    form { padding:10px 18px 16px; display:grid; gap:12px; }
+    .ends { position:relative; display:grid; grid-template-columns:20px 1fr 36px; column-gap:8px; row-gap:6px; align-items:center; }
+    .ends .dot { width:10px; height:10px; border-radius:50%; justify-self:center; }
+    .ends .dot.a { border:3px solid var(--go); }
+    .ends .dot.b { background:var(--ink); border-radius:2px; }
+    .ends .rail { position:absolute; left:9px; top:26px; bottom:26px; border-left:2px dotted var(--faint); }
+    .swap { grid-column:3; grid-row:1 / span 2; width:34px; height:34px; border-radius:10px; border:0; background:transparent; color:var(--muted); cursor:pointer; font-size:16px; }
+    .swap:hover { background:var(--field); color:var(--ink); }
+    input, select, button { font:inherit; color:inherit; }
+    input { width:100%; height:40px; padding:0 12px; border:1px solid transparent; border-radius:10px; background:var(--field); outline:none; }
+    input::placeholder { color:var(--faint); }
+    input:focus { background:var(--panel); border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+    .controls { display:flex; gap:8px; align-items:center; }
+    .seg { display:inline-flex; background:var(--field); border-radius:10px; padding:3px; flex:1; }
+    .seg label { flex:1; text-align:center; cursor:pointer; }
+    .seg input { display:none; }
+    .seg span { display:block; padding:6px 8px; border-radius:8px; font-size:13px; color:var(--muted); font-weight:500; }
+    .seg input:checked + span { background:var(--panel); color:var(--ink); box-shadow:0 1px 3px rgba(0,0,0,.12); }
+    .more { position:relative; }
+    .more summary { list-style:none; cursor:pointer; width:38px; height:38px; display:grid; place-items:center; border-radius:10px; color:var(--muted); background:var(--field); font-weight:700; }
+    .more summary::-webkit-details-marker { display:none; }
+    .more[open] summary { color:var(--ink); }
+    .pop { display:none; grid-template-columns:auto 90px; align-items:center; gap:4px 12px; padding:10px 12px; border-radius:10px; background:var(--field); font-size:12px; color:var(--muted); }
+    form:has(.more[open]) .pop { display:grid; }
+    .pop label { display:contents; color:var(--ink); font-size:13px; }
+    .pop input { height:32px; background:var(--panel); grid-column:2; grid-row:1; }
+    .pop span { grid-column:1 / -1; }
+    .go { height:44px; border:0; border-radius:12px; background:var(--accent); color:var(--accent-ink); font-weight:600; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; transition:filter .15s; }
+    .go:hover { filter:brightness(1.07); }
+    .go:disabled { cursor:progress; filter:saturate(.7); }
+    .spin { width:14px; height:14px; border:2px solid rgba(255,255,255,.4); border-top-color:#fff; border-radius:50%; animation:r .7s linear infinite; display:none; }
+    .go:disabled .spin { display:block; }
+    @keyframes r { to { transform:rotate(360deg); } }
+
+    #out { border-top:1px solid var(--line); }
+    .section { padding:16px 18px; }
+    .section + .section { padding-top:4px; }
+    .eyebrow { font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin:0 0 8px; }
+    .examples a { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; margin:0 -12px; border-radius:10px; color:var(--ink); text-decoration:none; }
+    .examples a:hover { background:var(--field); }
+    .examples small { color:var(--faint); white-space:nowrap; }
+    .total { font-size:34px; font-weight:700; letter-spacing:-.03em; line-height:1.1; }
+    .summary { color:var(--muted); margin-top:4px; }
+    .pill { display:inline-flex; align-items:center; gap:6px; margin-top:12px; padding:5px 10px; border-radius:999px; font-size:12px; font-weight:500;
+            background:color-mix(in srgb, var(--go) 12%, transparent); color:var(--go); }
+    .note { display:flex; gap:8px; margin-top:10px; padding:9px 11px; border-radius:10px; background:var(--warn-bg); color:var(--warn); font-size:12.5px; }
+    .note::before { content:"!"; flex:none; width:16px; height:16px; border-radius:50%; background:currentColor; color:var(--warn-bg); font-weight:700; font-size:11px; display:grid; place-items:center; margin-top:1px; }
+    .error { margin:16px 18px; padding:12px 14px; border-radius:12px; background:color-mix(in srgb, var(--gap) 10%, transparent); }
+    .error small { display:block; color:var(--muted); margin-top:2px; }
+    .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line); border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
+    .grid3 div { background:var(--panel); padding:12px 18px; }
+    .grid3 span { display:block; font-size:11px; color:var(--faint); }
+    .grid3 b { font-weight:600; }
+    .opt { display:flex; gap:10px; padding:6px 0; }
+    .opt i { flex:none; width:18px; height:18px; border-radius:50%; display:grid; place-items:center; font-style:normal; font-size:10px; font-weight:700; color:#fff; margin-top:1px; }
+    .opt.chosen i { background:var(--accent); } .opt.out i { background:var(--faint); }
+    .opt small { display:block; color:var(--muted); font-size:12px; }
+    .stops { list-style:none; margin:0; padding:0; }
+    .stops li { display:grid; grid-template-columns:28px 1fr auto; gap:10px; align-items:center; padding:9px 12px; margin:0 -12px; border-radius:10px; cursor:pointer; }
+    .stops li:hover, .stops li.active { background:var(--field); }
+    .stops li > div { min-width:0; }
+    .num { width:24px; height:24px; border-radius:50%; background:var(--stop); color:#fff; font-size:11px; font-weight:700; display:grid; place-items:center; }
+    .num.unlisted { background:var(--faint); }
+    .stops .name { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .stops .where { font-size:12px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .stops .amt { text-align:right; font-weight:600; }
+    .stops .amt small { display:block; font-weight:400; font-size:12px; color:var(--faint); }
+    .meta { padding:4px 18px 16px; font-size:11.5px; color:var(--faint); display:flex; flex-wrap:wrap; gap:4px 10px; }
+    .meta a { color:var(--accent); text-decoration:none; margin-left:auto; }
+    .skeleton { padding:18px; }
+    .skeleton div { height:12px; border-radius:6px; background:var(--field); margin-bottom:12px; animation:p 1.2s ease-in-out infinite; }
+    .skeleton div:first-child { height:34px; width:55%; }
+    .skeleton div:nth-child(2) { width:80%; }
+    @keyframes p { 50% { opacity:.45; } }
+
+    .pin { width:26px; height:26px; border-radius:50%; background:var(--stop); color:#fff; display:grid; place-items:center; font:700 11px Inter,system-ui,sans-serif; border:2.5px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.3); transition:transform .15s; }
+    .pin.unlisted { background:#9ca3af; }
+    .pin.hot { transform:scale(1.25); }
+    .end { width:16px; height:16px; border-radius:50%; border:3px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,.35); }
+    .end.a { background:var(--go); } .end.b { background:#111418; border-radius:4px; }
+    .legend { background:var(--panel); color:var(--ink); padding:8px 12px; border-radius:12px; box-shadow:var(--shadow); font:12px/1.7 Inter,system-ui,sans-serif; }
+    .legend i { display:inline-block; width:18px; vertical-align:middle; margin-right:8px; border-top:4px solid; border-radius:2px; }
+    .leaflet-popup-content-wrapper { border-radius:12px; background:var(--panel); color:var(--ink); box-shadow:var(--shadow); }
+    .leaflet-popup-tip { background:var(--panel); }
+    .leaflet-popup-content { font:13px/1.5 Inter,system-ui,sans-serif; margin:12px 14px; }
+    .leaflet-popup-content small { color:var(--muted); }
+    .leaflet-control-zoom { border:0 !important; box-shadow:var(--shadow) !important; border-radius:12px !important; overflow:hidden; }
+    .leaflet-control-zoom a { background:var(--panel) !important; color:var(--ink) !important; border-color:var(--line) !important; }
+    .leaflet-control-attribution { background:color-mix(in srgb, var(--panel) 80%, transparent) !important; color:var(--muted) !important; }
+    .leaflet-control-attribution a { color:var(--muted) !important; }
+
+    @media (max-width: 760px) {
+      #map { position:relative; height:46vh; }
+      .panel { position:relative; top:auto; left:auto; max-height:none; width:auto; margin-top:-18px; border-radius:18px 18px 0 0; box-shadow:0 -4px 20px rgba(0,0,0,.1); }
+      .scroll { overflow:visible; }
+    }
+    @media (prefers-color-scheme: dark) { .pin, .num { color:#111418; } .end.b { background:#f3f4f6; } .end, .pin { border-color:#16191d; } }
   </style>
 </head>
 <body>
-<aside>
-  <h1>Fuel Route Planner</h1>
-  <form id="f">
-    <label>Start <input name="start" required list="places" autocomplete="off" placeholder="Chicago, IL · 60601 · 41.88,-87.63"></label>
-    <label>Finish <input name="finish" required list="places" autocomplete="off" placeholder="Houston, TX"></label>
-    <label>Tank at start
-      <select name="start_fuel"><option value="empty">Empty (buy near the start)</option><option value="full">Full (500 mi)</option></select>
-    </label>
-    <button>Plan route</button>
-    <datalist id="places"></datalist>
-  </form>
-  <div id="out"></div>
-</aside>
 <div id="map"></div>
+<div class="panel">
+  <div class="scroll">
+    <div class="brand"><b>Fuel Route</b><span>500 mi range · 10 mpg</span></div>
+    <form id="f">
+      <div class="ends">
+        <div class="rail"></div>
+        <span class="dot a"></span><input name="start" required list="places" autocomplete="off" placeholder="Start: city, ZIP or lat,lon" aria-label="Start">
+        <span class="dot b"></span><input name="finish" required list="places" autocomplete="off" placeholder="Destination" aria-label="Destination">
+        <button type="button" class="swap" title="Swap" aria-label="Swap start and destination">⇅</button>
+      </div>
+      <div class="controls">
+        <div class="seg" role="radiogroup" aria-label="Tank at start">
+          <label><input type="radio" name="start_fuel" value="empty" checked><span>Empty tank</span></label>
+          <label><input type="radio" name="start_fuel" value="full"><span>Full tank</span></label>
+        </div>
+        <details class="more"><summary title="More options" aria-label="More options">⋯</summary></details>
+      </div>
+      <div class="pop">
+        <label>Cost per stop ($)<input name="stop_cost" type="number" min="0" step="1" value="10"></label>
+        <span>Stands in for driver time. 0 gives the strictly cheapest fuel.</span>
+      </div>
+      <button class="go"><span class="spin"></span><span class="label">Find fuel stops</span></button>
+      <datalist id="places"></datalist>
+    </form>
+    <div id="out"></div>
+  </div>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
-const map = L.map('map').setView([39.5, -98.35], 4);
-// OSM's tile servers block requests without a Referer, and some browsers send none by default.
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19, referrerPolicy: 'strict-origin-when-cross-origin', attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-}).addTo(map);
+const wide = () => !matchMedia('(max-width: 760px)').matches;
+const map = L.map('map', {zoomControl: false}).setView([39.5, -98.35], 4);
+L.control.zoom({position: 'bottomright'}).addTo(map);
+// A muted grey basemap keeps the route and stops readable; labels come as a separate layer on top of the route.
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+const esri = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_' + (dark ? 'Dark' : 'Light') + '_Gray_';
+L.tileLayer(esri + 'Base/MapServer/tile/{z}/{y}/{x}', {maxZoom: 16, attribution: 'Tiles &copy; Esri, HERE, Garmin, &copy; OpenStreetMap contributors'}).addTo(map);
+map.createPane('labels').style.zIndex = 450;
+map.getPane('labels').style.pointerEvents = 'none';
+L.tileLayer(esri + 'Reference/MapServer/tile/{z}/{y}/{x}', {maxZoom: 16, pane: 'labels'}).addTo(map);
 const layer = L.layerGroup().addTo(map);
 const form = document.getElementById('f'), out = document.getElementById('out');
+const button = form.querySelector('.go'), buttonLabel = button.querySelector('.label');
+const css = name => getComputedStyle(document.body).getPropertyValue(name).trim();
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const usd = n => '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-
 const usdPrice = p => '$' + Number(p).toFixed(3);  // the API keeps full precision; 3 dp is plenty to read
-const button = form.querySelector('button');
+const miles = n => Math.round(n).toLocaleString('en-US') + ' mi';
+const hours = h => h < 1 ? Math.round(h * 60) + ' min' : `${Math.floor(h)} h ${Math.round((h % 1) * 60)} min`;
+const sentence = s => { s = String(s ?? ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+// The price list is in capitals; "PILOT TRAVEL CENTER #1243" reads better as "Pilot Travel Center #1243".
+const title = s => String(s ?? '').toLowerCase().replace(/(^|[\s\-/(&])([a-z])/g, (m, a, b) => a + b.toUpperCase())
+  .replace(/\b(Ta|Bp|Cfn|Usa|Llc)\b/g, w => w.toUpperCase());
+const fitPadding = () => wide() ? {paddingTopLeft: [420, 40], paddingBottomRight: [40, 40]} : {padding: [24, 24]};
+
+const EXAMPLES = [
+  ['New York, NY', 'Los Angeles, CA', 'Coast to coast'],
+  ['Chicago, IL', 'Houston, TX', 'Midwest to the Gulf'],
+  ['San Francisco, CA', 'Seattle, WA', 'Detours for fuel'],
+  ['10001', '90012', 'ZIP codes'],
+];
+
+function emptyState() {
+  out.innerHTML = `<div class="section examples"><p class="eyebrow">Try a route</p>${EXAMPLES.map(([a, b, n]) =>
+    `<a href="?start=${encodeURIComponent(a)}&finish=${encodeURIComponent(b)}"><span>${esc(a)} → ${esc(b)}</span><small>${esc(n)}</small></a>`).join('')}</div>`;
+  out.querySelectorAll('.examples a').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault(); fillForm(new URLSearchParams(a.search)); plan();
+  }));
+}
 
 function fillForm(params) {
   for (const k of ['start', 'finish']) form.elements[k].value = params.get(k) || '';
-  const fuel = params.get('start_fuel') || 'empty', select = form.elements.start_fuel;
-  const miles = Number(fuel);
-  if (![...select.options].some(o => o.value === fuel) && fuel.trim() !== '' && miles > 0 && miles <= 500)
-    select.add(new Option(`${miles} mi in the tank`, fuel));
-  select.value = fuel;
+  const fuel = (params.get('start_fuel') || 'empty').trim();
+  const seg = form.querySelector('.seg');
+  seg.querySelectorAll('label.custom').forEach(l => l.remove());
+  const m = Number(fuel);
+  if (!['empty', 'full'].includes(fuel) && fuel !== '' && m > 0 && m <= 500)  // a mileage from a shared URL
+    seg.insertAdjacentHTML('beforeend', `<label class="custom"><input type="radio" name="start_fuel" value="${m}"><span>${m} mi</span></label>`);
+  const radio = [...form.querySelectorAll('input[name=start_fuel]')].find(r => r.value === (m > 0 && m <= 500 ? String(m) : fuel));
+  (radio || form.querySelector('input[value=empty]')).checked = true;
+  form.elements.stop_cost.value = params.get('stop_cost') ?? '10';
 }
-fillForm(new URLSearchParams(location.search));
 
-let inflight = null;  // only the latest request may render
+function query() {
+  const q = new URLSearchParams(new FormData(form));
+  if (q.get('stop_cost') === '' || q.get('stop_cost') === '10') q.delete('stop_cost');  // the default; keeps URLs short
+  return q;
+}
+
+let inflight = null, legend = null;  // only the latest request may render
 
 async function plan(push = true) {
-  const q = new URLSearchParams(new FormData(form));
+  const q = query();
   if (push && location.search !== '?' + q) history.pushState(null, '', '?' + q);
   if (inflight) inflight.abort();
   const ctrl = inflight = new AbortController();
-  out.innerHTML = '<p>Planning…</p>'; layer.clearLayers(); button.disabled = true;
+  form.querySelector('.more').open = false;
+  out.innerHTML = '<div class="skeleton"><div></div><div></div><div></div><div></div></div>';
+  layer.clearLayers(); setLegend([]);
+  button.disabled = true; buttonLabel.textContent = 'Planning…';
   let res, data;
   try {
     res = await fetch('/api/route?' + q, {signal: ctrl.signal});
@@ -93,63 +237,109 @@ async function plan(push = true) {
     if (ctrl.signal.aborted) return;
     data = null;
   } finally {
-    if (inflight === ctrl) { inflight = null; button.disabled = false; }
+    if (inflight === ctrl) { inflight = null; button.disabled = false; buttonLabel.textContent = 'Find fuel stops'; }
   }
   if (ctrl.signal.aborted) return;
-  if (!data) { out.innerHTML = '<div class="msg">The server could not be reached or returned an unexpected response.</div>'; return; }
+  if (!data) { out.innerHTML = '<div class="error"><b>No answer from the server</b><small>Is it still running? Check the terminal where you started it.</small></div>'; return; }
   if (!res.ok) {
     const err = data.error || {code: res.status, message: 'request failed'};
     const fields = Object.entries(err.details || {}).filter(([, v]) => Array.isArray(v))
       .map(([k, v]) => `${esc(k)}: ${esc(v.join(' '))}`).join('<br>');
-    out.innerHTML = `<div class="msg"><b>${esc(err.code)}</b><br>${esc(err.message)}${fields ? '<br>' + fields : ''}</div>`; return;
+    out.innerHTML = `<div class="error"><b>${esc(sentence(err.message))}</b>${fields ? `<small>${fields}</small>` : ''}<small>${esc(err.code)}</small></div>`;
+    return;
   }
-  render(data);
+  render(data, q);
 }
 
 window.addEventListener('popstate', () => {  // Back/Forward replays the plan in the URL
   fillForm(new URLSearchParams(location.search));
   if (form.elements.start.value && form.elements.finish.value) plan(false);
-  else { layer.clearLayers(); out.innerHTML = ''; }
+  else { layer.clearLayers(); setLegend([]); emptyState(); }
 });
 
-function render(d) {
-  // Route options the plan didn't take (e.g. the direct route when it's out of range on listed stations): dashed grey,
-  // with the stretch that has no listed station in orange.
-  d.route_options.filter(o => o.route).forEach(o => L.geoJSON(o.route, {style: {color: '#8a8a85', weight: 4, dashArray: '6 8'}})
-    .bindPopup(`<b>${esc(o.name)}</b><br>${esc(o.note)}`).addTo(layer));
-  d.route_options.filter(o => o.gap && o.gap.route).forEach(o => L.geoJSON(o.gap.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--stop'), weight: 6}})
+function setLegend(items) {
+  if (legend) { legend.remove(); legend = null; }
+  if (!items.length) return;
+  legend = L.control({position: 'topright'});
+  legend.onAdd = () => Object.assign(L.DomUtil.create('div', 'legend'), {innerHTML: items.join('<br>')});
+  legend.addTo(map);
+}
+
+const endIcon = cls => L.divIcon({className: '', html: `<div class="end ${cls}"></div>`, iconSize: [16, 16], iconAnchor: [8, 8]});
+
+function render(d, q) {
+  const markers = {};
+  // Route options the plan didn't take (e.g. the direct route when it's out of range on listed stations): dotted
+  // grey, with the stretch that has no listed station in red. A legend appears only then.
+  const others = d.route_options.filter(o => o.route), gaps = d.route_options.filter(o => o.gap && o.gap.route);
+  others.forEach(o => L.geoJSON(o.route, {style: {color: '#9ca3af', weight: 4, dashArray: '2 8', lineCap: 'round'}})
+    .bindPopup(`<b>${esc(o.name)}</b><br><small>${esc(o.note)}</small>`).addTo(layer));
+  gaps.forEach(o => L.geoJSON(o.gap.route, {style: {color: css('--gap'), weight: 5, opacity: .8}})
     .bindPopup(`No listed station for ${o.gap.miles} mi`).addTo(layer));
-  const line = L.geoJSON(d.map.route, {style: {color: getComputedStyle(document.body).getPropertyValue('--accent'), weight: 5, opacity: .85}}).addTo(layer);
-  L.marker([d.start.lat, d.start.lon], {zIndexOffset: -1000}).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
-  L.marker([d.finish.lat, d.finish.lon], {zIndexOffset: -1000}).bindPopup('<b>Finish</b><br>' + esc(d.finish.label)).addTo(layer);
-  const where = s => s.listed ? `${esc(s.city)}, ${esc(s.state)} · ${esc(s.address)}` : 'Any station here (not in the price list)';
-  const bill = s => s.listed ? `${usdPrice(s.price_per_gallon)}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b>` : `${s.gallons} gal, unpriced`;
-  d.fuel_stops.forEach(s => L.marker([s.route_lat, s.route_lon], {icon: L.divIcon({className: '', html: `<div class="pin${s.listed ? '' : ' unlisted'}">${s.stop}</div>`, iconSize: [24, 24], iconAnchor: [12, 12]}), zIndexOffset: 1000 + s.stop})
-    .bindPopup(`<b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b><br>${where(s)}<br>${bill(s)}<br>mile ${s.mile_marker}${s.listed && s.off_route_miles ? ` · station in town, ~${s.off_route_miles} mi off the route` : ''}`).addTo(layer));
+  if (others.length) setLegend([`<i style="border-color:${css('--accent')}"></i>Planned route`,
+    '<i style="border-color:#9ca3af;border-top-style:dotted"></i>Direct route, not taken',
+    ...(gaps.length ? [`<i style="border-color:${css('--gap')}"></i>No listed station in range`] : [])]);
+  L.geoJSON(d.map.route, {style: {color: dark ? '#000' : '#fff', weight: 9, opacity: .7}}).addTo(layer);  // casing
+  const line = L.geoJSON(d.map.route, {style: {color: css('--accent'), weight: 5}}).addTo(layer);
+  L.marker([d.start.lat, d.start.lon], {icon: endIcon('a'), zIndexOffset: -1000}).bindPopup('<b>Start</b><br>' + esc(d.start.label)).addTo(layer);
+  L.marker([d.finish.lat, d.finish.lon], {icon: endIcon('b'), zIndexOffset: -1000}).bindPopup('<b>Destination</b><br>' + esc(d.finish.label)).addTo(layer);
+  const name = s => s.listed ? esc(title(s.name)) : 'Unlisted fuel';
+  d.fuel_stops.forEach(s => {
+    const popup = s.listed
+      ? `<b>${s.stop}. ${name(s)}</b><br>${esc(s.city)}, ${esc(s.state)} · ${esc(s.address)}<br>${usdPrice(s.price_per_gallon)}/gal × ${s.gallons} gal = <b>${usd(s.cost)}</b><br><small>mile ${s.mile_marker}${s.off_route_miles ? ` · station in town, ~${s.off_route_miles} mi off the route` : ''}</small>`
+      : `<b>${s.stop}. Unlisted fuel</b><br>Buy ${s.gallons} gal at any station here<br><small>mile ${s.mile_marker} · not in the price list, so not priced</small>`;
+    markers[s.stop] = L.marker([s.route_lat, s.route_lon], {icon: L.divIcon({className: '', html: `<div class="pin${s.listed ? '' : ' unlisted'}">${s.stop}</div>`, iconSize: [26, 26], iconAnchor: [13, 13]}), zIndexOffset: 1000 + s.stop})
+      .bindPopup(popup).addTo(layer);
+  });
   const bounds = line.getBounds();
   layer.eachLayer(l => l.getBounds && bounds.extend(l.getBounds()));  // include any other route options
-  map.fitBounds(bounds, {padding: [30, 30]});
+  map.fitBounds(bounds, fitPadding());
+
+  const t = d.trip_fuel_cost, prev = [0, ...d.fuel_stops.map(s => s.mile_marker)];
+  const listedGallons = d.fuel_stops.filter(s => s.listed).reduce((n, s) => n + s.gallons, 0);
+  const opts = d.route_options.length > 1 ? `<div class="section"><p class="eyebrow">Route</p>${d.route_options.map(o => `
+    <div class="opt ${o.selected ? 'chosen' : 'out'}"><i>${o.selected ? '✓' : '✕'}</i><div><b>${esc(o.name)}</b> · ${miles(o.distance_miles)}<small>${esc(o.note)}</small></div></div>`).join('')}</div>` : '';
   out.innerHTML = `
-    <p class="trip"><b>${esc(d.start.label)}</b> → <b>${esc(d.finish.label)}</b></p>
-    ${d.warnings.map(w => `<div class="msg">${esc(w.message)}</div>`).join('')}
-    ${d.route_options.length > 1 ? `<ol class="options">${d.route_options.map(o => `<li class="${o.selected ? 'chosen' : ''}">
-      <b>${o.selected ? '✓ ' : '✕ '}${esc(o.name)}</b> · ${o.distance_miles.toLocaleString()} mi<small>${esc(o.note)}</small></li>`).join('')}</ol>` : ''}
-    <div class="stats">
-      <div class="stat"><span>Trip fuel cost</span><b>${d.trip_fuel_cost.usd === null ? '–' : usd(d.trip_fuel_cost.usd)}</b>${d.trip_fuel_cost.estimated_gallons ? `<small>incl. ${d.trip_fuel_cost.estimated_gallons} gal not bought at a listed stop${d.trip_fuel_cost.estimate_price_per_gallon === null ? ', unpriced' : `, at ~${usdPrice(d.trip_fuel_cost.estimate_price_per_gallon)}/gal`}</small>` : ''}</div>
-      <div class="stat"><span>Bought at stops</span><b>${usd(d.total_fuel_cost)}</b>${d.cost_is_complete ? '' : `<small>+ ${d.unpriced_gallons} gal unpriced</small>`}</div>
-      <div class="stat"><span>Distance</span><b>${d.distance_miles.toLocaleString()} mi</b><small>${d.trip_fuel_cost.gallons_used} gal at ${d.assumptions.miles_per_gallon} mpg</small></div>
-      <div class="stat"><span>Stops</span><b>${d.fuel_stops.length}</b>${d.savings_vs_naive ? `<small>${usd(d.savings_vs_naive)} cheaper than refuelling blind</small>` : ''}</div>
+    <div class="section">
+      <p class="eyebrow">${esc(d.start.label)} → ${esc(d.finish.label)}</p>
+      <div class="total">${t.usd === null ? '–' : usd(t.usd)}</div>
+      <div class="summary">fuel for ${miles(d.distance_miles)} · ${hours(d.duration_hours)} · ${d.fuel_stops.length} stop${d.fuel_stops.length === 1 ? '' : 's'}</div>
+      ${d.savings_vs_naive > 0 ? `<div class="pill">Saves ${usd(d.savings_vs_naive)} vs. filling up without comparing prices</div>` : ''}
+      ${d.warnings.map(w => `<div class="note">${esc(sentence(w.message))}</div>`).join('')}
     </div>
-    <ol>${d.fuel_stops.map(s => `<li><span class="n${s.listed ? '' : ' unlisted'}">${s.stop}</span><b>${s.listed ? esc(s.name) : 'Unlisted fuel'}</b>
-      <small>${where(s)} · mile ${s.mile_marker}</small>
-      <small>${bill(s)}</small></li>`).join('')}</ol>
-    <p><small>${esc(d.meta.routing_provider)} · routing calls: ${d.meta.external_api_calls.routing} · ${d.meta.timings_ms.total} ms</small></p>`;
+    <div class="grid3">
+      <div><span>Bought at stops</span><b>${usd(d.total_fuel_cost)}</b></div>
+      <div><span>Gallons used</span><b>${Number(t.gallons_used).toFixed(1)}</b></div>
+      <div><span>Avg. price</span><b>${listedGallons ? usdPrice(d.total_fuel_cost / listedGallons) : '–'}</b></div>
+    </div>
+    ${opts}
+    <div class="section"><p class="eyebrow">Fuel stops</p>
+      <ol class="stops">${d.fuel_stops.map((s, i) => `
+        <li data-stop="${s.stop}"><span class="num${s.listed ? '' : ' unlisted'}">${s.stop}</span>
+          <div><div class="name">${name(s)}</div>
+            <div class="where">${s.listed ? `${esc(s.city)}, ${esc(s.state)} · ` : ''}mile ${Math.round(s.mile_marker).toLocaleString('en-US')}${i > 0 ? ` · +${miles(s.mile_marker - prev[i])}` : ''}</div></div>
+          <div class="amt">${s.listed ? usd(s.cost) : '–'}<small>${Number(s.gallons).toFixed(1)} gal${s.listed ? ` · ${usdPrice(s.price_per_gallon)}` : ''}</small></div></li>`).join('')}</ol>
+    </div>
+    <div class="meta"><span>${esc(d.meta.routing_provider)}</span><span>${d.meta.external_api_calls.routing} routing call${d.meta.external_api_calls.routing === 1 ? '' : 's'}${d.meta.plan_cache_hit || d.meta.route_cache_hit ? ' (cached)' : ''}</span><span>${Math.round(d.meta.timings_ms.total)} ms</span>
+      <a href="/api/route?${esc(q)}" target="_blank" rel="noopener">JSON ↗</a></div>`;
+  out.querySelectorAll('.stops li').forEach(li => {
+    const m = markers[li.dataset.stop], pin = () => m.getElement()?.querySelector('.pin');
+    li.addEventListener('mouseenter', () => pin()?.classList.add('hot'));
+    li.addEventListener('mouseleave', () => pin()?.classList.remove('hot'));
+    li.addEventListener('click', () => {
+      out.querySelectorAll('.stops li.active').forEach(x => x.classList.remove('active'));
+      li.classList.add('active');
+      map.flyTo(m.getLatLng(), Math.max(map.getZoom(), 11), {duration: .6});
+      m.openPopup();
+      if (!wide()) document.getElementById('map').scrollIntoView({behavior: 'smooth'});
+    });
+  });
 }
 
 // Autocomplete from the offline place list (/api/places), debounced as you type.
 const places = document.getElementById('places');
 let suggestTimer, suggestSeq = 0;
-for (const name of ['start', 'finish']) form.elements[name].addEventListener('input', e => {
+for (const field of ['start', 'finish']) form.elements[field].addEventListener('input', e => {
   clearTimeout(suggestTimer);
   const q = e.target.value.trim();
   if (q.length < 2 || /^[\d\s,.()-]+$/.test(q)) { suggestSeq++; places.innerHTML = ''; return; }  // ZIPs and lat,lon need no help
@@ -163,8 +353,13 @@ for (const name of ['start', 'finish']) form.elements[name].addEventListener('in
   }, 150);
 });
 
+form.querySelector('.swap').addEventListener('click', () => {
+  const s = form.elements.start, f = form.elements.finish;
+  [s.value, f.value] = [f.value, s.value];
+});
 form.addEventListener('submit', e => { e.preventDefault(); plan(); });
-if (form.elements.start.value && form.elements.finish.value) plan(false);
+fillForm(new URLSearchParams(location.search));
+if (form.elements.start.value && form.elements.finish.value) plan(false); else emptyState();
 </script>
 </body>
 </html>
