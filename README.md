@@ -111,7 +111,7 @@ the request falls back to OSRM once.
 | Start and finish inside the USA | `start` and `finish` accept `City, ST`, a city name on its own, a ZIP code, `lat,lon` or an address. Places outside the US, a state or country on its own, and places with no road to the mainland (Hawaii, the territories, Juneau and the rest of Southeast and western Alaska, Nantucket, Martha's Vineyard, Catalina) get a 400 |
 | A map of the route | `map.route` is the route as a GeoJSON line, included by default. `map.url` opens an interactive map, and every Postman request draws it in the *Visualize* tab |
 | Cost-effective fuel stops, 500-mile range | `fuel_stops`, chosen by an exact optimiser. "Optimal" here means the lowest fuel cost plus $10 per stop, so the plan doesn't stop to save a cent. `stop_cost=0` gives the pure cheapest plan, and `cheapest_possible_fuel_cost` is always shown next to it |
-| Total spent on fuel at 10 mpg | `total_fuel_cost` is the sum of the stop costs, to the cent, and `total_gallons` is the gallons bought. `trip_fuel_cost` is what all the fuel the trip burns is worth: the same figure when the tank starts empty, and with fuel already in the tank it values those gallons at the local listed price, so a full-tank trip doesn't show $0 |
+| Total spent on fuel at 10 mpg | `total_fuel_cost` is the money spent at listed stops, the sum of the stop costs to the cent; `total_gallons` is the gallons bought. `total_fuel_cost_estimate` is what all the fuel the trip burns costs: it adds the drive to the first fill-up, fuel already in the tank and any fuel bought off the list, at a local listed price (details in `trip_fuel_cost`). So a full-tank trip, or one through a stretch the list doesn't cover, never headlines $0 |
 | Fast | A new route takes 0.2–0.5 s for most trips and ~1.3 s coast to coast, nearly all of it the routing API; our own work is ~30 ms (`meta.timings_ms`). The route is requested as an encoded polyline (a sixth of the size of GeoJSON) over a connection kept open between requests. A repeat is answered from the cached plan in ~10 ms. Under load in Docker (2 gunicorn workers, Redis): about 700 requests/s, median 14 ms at 10 concurrent clients, 73 ms at 50 |
 | One routing call is ideal | One routing call per new route and zero for a repeat. The only exception is a route the price list can't fuel, which takes one more call for a detour (two at most). `meta.external_api_calls` reports the count on every response |
 | Latest stable Django | Django 6.1.2 with Django REST Framework 3.18.3, on Python 3.14 (the newest Python Django 6.1 supports; 3.12+ works, and CI tests both 3.14 and 3.12) |
@@ -144,7 +144,8 @@ Response, trimmed:
   "total_fuel_cost": 873.68,
   "total_gallons": 283.389,
   "unpriced_gallons": 0.0, "cost_is_complete": true,   // see "When the price list runs out" below
-  "trip_fuel_cost": {"usd": 873.68, "gallons_used": 283.4, "bought_at_stops_usd": 873.68, "estimated_gallons": 0, ...},
+  "total_fuel_cost_estimate": 878.27,       // all fuel burned, incl. the 7.4 mi drive to the first fill-up and back
+  "trip_fuel_cost": {"usd": 878.27, "gallons_used": 284.871, "bought_at_stops_usd": 873.68, "estimated_gallons": 1.482, ...},
   "cheapest_possible_fuel_cost": 865.6,     // the same trip with stop_cost=0 (10 stops)
   "savings_vs_naive": 85.24,                // vs. driving as far as a tank allows and filling up, price-blind
   "route_options": [{"name": "Direct route", "selected": true, "status": "ok", "distance_miles": 2810.4, ...}],
@@ -190,7 +191,8 @@ start/finish ──► resolve offline (city / ZIP / lat,lon) ──► route ca
 - Some routes have a stretch longer than a tank with no listed station. San Francisco → Seattle up I-5 has none for the first 576 miles, because the list's 8 California stations are all near the Mexican border.
 - The API then looks for a detour through listed stations. Towns with a station become a graph, linked where the estimated road distance fits in a tank. Dijkstra finds the shortest chain, and one more routing call goes through its waypoints. The plan is then re-checked on the real road distances. A tighter estimate is tried first, then a cautious one, so a detour costs at most two extra calls.
 - `route_options` lists the direct route first. When it can't be fuelled from the list it is marked `out_of_range`, with the gap (`from_mile`, `to_mile` and its geometry), and the detour that's used is `selected`. SF → Seattle goes via Sparks, NV and Madras, OR: +141 mi, every leg in range.
-- With no workable detour, the API plans the direct route anyway. Fuel bought where nothing listed is in range appears in `fuel_stops` with `"listed": false` and no price, and is counted in `unpriced_gallons`. The listed purchases make up `total_fuel_cost`, and `cost_is_complete` is `false`. The same applies when there's no listed station near the start, as in most of California: the plan buys only enough unlisted fuel to reach the first listed station.
+- With no workable detour, the API plans the direct route anyway. Fuel bought where nothing listed is in range appears in `fuel_stops` with `"listed": false` and no price, and is counted in `unpriced_gallons`. The listed purchases make up `total_fuel_cost`, `cost_is_complete` is `false`, and `total_fuel_cost_estimate` prices the unlisted gallons at a typical listed price (LA → SF: $0.00 at listed stops, about $181 in all). The same applies when there's no listed station near the start, as in most of California.
+- Unlisted fuel is planned at that typical price plus $1/gal, so the plan uses a listed station whenever it saves real money, but never adds a stop just to avoid buying a gallon more off the list.
 
 **Choosing the stops** (`fuel/services/optimizer.py`).
 - A stop costs a detour from the road and back, and that detour is charged against both range and fuel cost.
@@ -232,7 +234,7 @@ ZipCode (code PK, lat, lon)
 ## Assumptions and limitations
 
 - **Station locations.** The price list has no coordinates, so each station is placed at the centre of its town. Its distance from the route (`off_route_miles`) is approximate. Each stop also has `route_lat`/`route_lon`, the point where the route passes it (the exit to take); the maps pin stops there so they sit on the highway. The fill-up before departure keeps its town position.
-- **Starting fuel.** With the default `start_fuel=empty`, the trip starts by filling up at the cheapest station within 10 miles of the start (25 miles if there isn't one), and the drive to that station isn't billed. Where there's no station that close (most of California), the first purchase is unpriced fuel at the start, just enough to reach a listed station, and `warnings` says how much.
+- **Starting fuel.** With the default `start_fuel=empty`, the trip starts by filling up at the cheapest station within 10 miles of the start (25 miles if there isn't one), and the drive there and back is counted in `gallons_used` and `total_fuel_cost_estimate` (not in the first tank's range). Where there's no station that close (most of California), the first purchase is unpriced fuel at the start, just enough to reach a listed station, and `warnings` says how much.
 - **Detours** are only chosen to stay on listed stations. A real truck would refuel in California; the direct route stays in `route_options` with its distance.
 - **Prices** are treated as fixed for the trip, and the tank may run down to empty exactly at a station.
 - **Route type.** Without an ORS key the route is OSRM's car route.
@@ -282,7 +284,6 @@ fuel/templates/fuel/map.html    the map page
 fuel/management/commands/       build_gazetteer, import_fuel_prices
 fuel/migrations/0002_*          loads the committed data on `migrate`
 data/                           the price list + cleaned, geocoded outputs
-AGENTS.md                       how the code fits together and the rules that keep it correct (CLAUDE.md points here)
 ```
 
 ## Data sources

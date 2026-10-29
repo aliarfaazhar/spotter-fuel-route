@@ -15,8 +15,8 @@ from django.db.models import Min
 
 from fuel.models import Station
 
-from .candidates import is_on_route, is_origin, is_unlisted, station_idx
-from .geometry import chord_to_miles, cumulative_miles, haversine_miles, simplify, to_xyz
+from .candidates import is_on_route, is_origin, is_unlisted, reference_price, station_idx
+from .geometry import cumulative_miles, haversine_miles, simplify
 from .optimizer import Purchase
 from .resolver import Point
 from .routing import Route
@@ -28,7 +28,6 @@ if TYPE_CHECKING:
 CENT = Decimal("0.01")
 GALLON = Decimal("0.001")
 ROUNDING_SLACK_GALLONS = Decimal("0.01")
-NEAREST_FOR_REFERENCE = 5
 
 Bill = list[tuple[Purchase, Decimal, Decimal]]
 
@@ -71,6 +70,8 @@ def trip_fuel_cost(billed: Bill, bought_usd: Decimal, chosen: Attempt, index: St
     """
     mpg = settings.FUEL["MILES_PER_GALLON"]
     detours = sum(2 * p.candidate.off for p, _, _ in billed if is_on_route(p.candidate))
+    # The fill-up before departure is a drive from the start to that station and back, through its town.
+    detours += sum(2 * _origin_miles(p.candidate, index, start) for p, _, _ in billed if is_origin(p.candidate))
     used = (Decimal(repr((chosen.route.distance_miles + detours) / mpg))).quantize(GALLON, rounding=ROUND_HALF_UP)
     from_tank = used - total_gallons(billed)
     if from_tank < ROUNDING_SLACK_GALLONS:  # per-stop rounding can leave a stray 0.001 gal
@@ -86,7 +87,7 @@ def trip_fuel_cost(billed: Bill, bought_usd: Decimal, chosen: Attempt, index: St
     }
     if estimated == 0:
         return out
-    price, basis = _reference_price(index, start, chosen)
+    price, basis = reference_price(index, start, chosen.matches, chosen.buffer)
     if price is None:
         out["usd"] = None
         return out
@@ -98,23 +99,9 @@ def trip_fuel_cost(billed: Bill, bought_usd: Decimal, chosen: Attempt, index: St
     return out
 
 
-def _reference_price(index: StationIndex, start: Point, chosen: Attempt) -> tuple[float | None, str | None]:
-    """The price used for fuel the plan doesn't buy at a listed stop: near the start, else typical on the route."""
-    radius = settings.FUEL["ORIGIN_STATION_RADII_MILES"][-1]
-    near_idx, _ = index.within(start.lat, start.lon, radius)
-    if near_idx.size:
-        basis = f"cheapest listed station within {radius:g} mi of the start"
-        return round(float(index.price[near_idx].min()), 3), basis
-    on_route = chosen.matches.station_idx[chosen.matches.off_route_miles <= (chosen.buffer or 0)]
-    if on_route.size:
-        return round(float(np.median(index.price[on_route])), 3), "median listed price along the route"
-    if len(index):  # nothing listed nearby at all (most of California): the closest listed stations, wherever
-        k = min(NEAREST_FOR_REFERENCE, len(index))
-        dist, idx = index.tree.query(to_xyz(start.lat, start.lon)[0], k=k)
-        idx, far = np.atleast_1d(idx), float(chord_to_miles(np.atleast_1d(dist).max()))
-        basis = f"median of the {k} nearest listed stations ({far:.0f} mi away at most)"
-        return round(float(np.median(index.price[idx])), 3), basis
-    return None, None
+def _origin_miles(c, index: StationIndex, start: Point) -> float:
+    i = station_idx(c)
+    return float(haversine_miles(start.lat, start.lon, index.lat[i], index.lon[i]))
 
 
 def _gap_dict(a: Attempt, include_route: bool) -> dict:
@@ -264,7 +251,7 @@ def stops(billed: Bill, index: StationIndex, start: Point, route: Route) -> list
         else:
             s = stations[int(index.ids[station_idx(p.candidate)])]
             origin = is_origin(p.candidate)
-            off = haversine_miles(start.lat, start.lon, s.place.lat, s.place.lon) if origin else p.candidate.off
+            off = _origin_miles(p.candidate, index, start) if origin else p.candidate.off
             # lat/lon is the station's town; route_lat/lon is where the route passes it (the exit to take).
             # The fill-up before departure is near the start, not on the route, so it keeps the town.
             route_lat, route_lon = (s.place.lat, s.place.lon) if origin else on_route(p.candidate.mile)

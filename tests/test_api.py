@@ -39,7 +39,12 @@ def test_plan_end_to_end(client, corridor, osrm):
     assert body["total_fuel_cost"] >= body["cheapest_possible_fuel_cost"]
     assert body["map"]["url"].startswith("http://testserver/map?")
     assert body["map"]["route"]["type"] == "LineString"  # the map of the route is in the response
-    assert body["trip_fuel_cost"]["usd"] == body["total_fuel_cost"]  # an empty start buys everything it burns
+    # An empty start buys everything it burns, except the drive from the start to the first fill-up and back,
+    # which the trip cost adds at that station's price.
+    first = stops[0]
+    round_trip_usd = 2 * first["off_route_miles"] / 10 * first["price_per_gallon"]
+    assert body["trip_fuel_cost"]["usd"] == pytest.approx(body["total_fuel_cost"] + round_trip_usd, abs=0.05)
+    assert body["total_fuel_cost_estimate"] == body["trip_fuel_cost"]["usd"]
     for s in stops:  # the map pins a stop where the route (the fixture's line along latitude 41) passes it
         if s["mile_marker"] > 0:
             assert s["route_lat"] == pytest.approx(41.0) and -96.0 <= s["route_lon"] <= -87.6
@@ -132,6 +137,9 @@ def test_gap_without_a_detour_is_planned_with_unlisted_fuel(client, corridor):
     )
     assert body["savings_vs_naive"] is None
     assert any(w["code"] == "unlisted_fuel" for w in body["warnings"])
+    # The headline estimate prices the unlisted fuel too, so a mostly unlisted trip never headlines near $0.
+    estimate = body["total_fuel_cost_estimate"]
+    assert estimate == body["trip_fuel_cost"]["usd"] and estimate > body["total_fuel_cost"]
 
 
 @pytest.fixture

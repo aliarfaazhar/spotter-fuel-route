@@ -177,10 +177,13 @@ def plan_trip(
     def attempt(r: routing.Route, via: tuple = ()) -> Attempt:
         a = Attempt(route=r, via=via, matches=match_route(r, index, max(buffers)))
         unlisted = [0.0] if start_unlisted else []
+        price = candidates.unlisted_price(index, start, a.matches, buffers[0]) if unlisted else 0.0
         for buffer in buffers:
-            cands = candidates.build(a.matches, index, buffer, origin, unlisted)
+            cands = candidates.build(a.matches, index, buffer, origin, unlisted, price)
             try:
-                a.purchases = plan_fuel_stops(cands, r.distance_miles, tank, fuel_miles, mpg, stop_cost)
+                a.purchases = plan_fuel_stops(
+                    cands, r.distance_miles, tank, fuel_miles, mpg, candidates.stop_cost_for(cands, stop_cost)
+                )
                 a.candidates, a.buffer, a.gap = cands, buffer, None
                 return a
             except InfeasibleRoute as exc:
@@ -216,12 +219,15 @@ def plan_trip(
         # No detour either: plan the direct route, buying off the list only where nothing listed is in range.
         unlisted = candidates.unlisted_every(route.distance_miles)
         chosen.buffer = buffers[0]
-        chosen.candidates = candidates.build(direct.matches, index, buffers[0], origin, unlisted)
-        chosen.purchases = plan_fuel_stops(chosen.candidates, route.distance_miles, tank, fuel_miles, mpg, stop_cost)
+        price = candidates.unlisted_price(index, start, direct.matches, buffers[0])
+        chosen.candidates = candidates.build(direct.matches, index, buffers[0], origin, unlisted, price)
+        cost = candidates.stop_cost_for(chosen.candidates, stop_cost)
+        chosen.purchases = plan_fuel_stops(chosen.candidates, route.distance_miles, tank, fuel_miles, mpg, cost)
 
     final = chosen.candidates
     uses_unlisted = any(candidates.is_unlisted(c) for c in final)
-    cheapest = report.bill(plan_fuel_stops(final, chosen.route.distance_miles, tank, fuel_miles, mpg, 0.0), mpg)
+    zero = candidates.stop_cost_for(final, 0.0)
+    cheapest = report.bill(plan_fuel_stops(final, chosen.route.distance_miles, tank, fuel_miles, mpg, zero), mpg)
     naive = None
     if not uses_unlisted:  # a price-blind plan would buy a different amount off the list: not comparable
         try:
@@ -249,6 +255,8 @@ def plan_trip(
         "total_fuel_cost": total_cost,
         "total_gallons": float(report.total_gallons(billed)),
         "unpriced_gallons": float(unpriced),
+        # The headline estimate: every gallon the trip burns, including any not bought at a listed station.
+        "total_fuel_cost_estimate": trip_cost["usd"],
         "trip_fuel_cost": trip_cost,
         "cost_is_complete": unpriced == 0,
         "cheapest_possible_fuel_cost": cheapest_cost,
