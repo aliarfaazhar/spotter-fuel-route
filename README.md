@@ -244,7 +244,7 @@ ZipCode (code PK, lat, lon)
 ## Tests
 
 ```bash
-make test    # 548 tests, including 400 randomised checks against the exact solver; no network access
+make test    # 560 tests, including 400 randomised checks against the exact solver; no network access
 make coverage  # the same, with a coverage report (CI fails below 85%; it's ~87%)
 make live    # optional: a test against the real routing API
 ```
