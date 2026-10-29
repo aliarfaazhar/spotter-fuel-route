@@ -1,7 +1,8 @@
 """The only module that talks to a routing API.
 
 OpenRouteService (truck profile) when ORS_API_KEY is set, otherwise the keyless public OSRM server, so the
-project runs with zero signup. If ORS is down or times out we make one fallback call to OSRM.
+project runs with zero signup. If ORS is down or times out we make one fallback call to OSRM, and skip ORS for
+a minute, so the rest of the request (a detour) and the next requests don't pay for a second failed call.
 Both send the route as an encoded polyline (lat, lon), a sixth of the size of GeoJSON.
 """
 
@@ -12,8 +13,12 @@ import httpx
 import numpy as np
 from django.conf import settings
 
+from .caching import safe_get, safe_set
+
 log = logging.getLogger(__name__)
 METERS_PER_MILE = 1609.344
+ORS_COOLDOWN_SECONDS = 60
+ORS_DOWN_KEY = "routing:ors-down"  # in the shared cache, so every worker process skips ORS together
 
 
 @dataclass(frozen=True)
@@ -172,12 +177,13 @@ def fetch_route(
 ) -> tuple[Route, int]:
     """Return the route (through `via` in order) and how many routing-API calls it took (1, or 2 when falling back)."""
     points = [start, *via, end]
-    if not settings.ROUTING["ORS_API_KEY"]:
+    if not settings.ROUTING["ORS_API_KEY"] or safe_get(ORS_DOWN_KEY) is not None:
         return _osrm(points), 1
     try:
         return _ors(points), 1
     except ProviderDown as exc:
-        log.warning("ORS failed (%s); falling back to OSRM", exc)
+        log.warning("ORS failed (%s); using OSRM for the next %d s", exc, ORS_COOLDOWN_SECONDS)
+        safe_set(ORS_DOWN_KEY, str(exc), ORS_COOLDOWN_SECONDS)
         return _osrm(points), 2
 
 

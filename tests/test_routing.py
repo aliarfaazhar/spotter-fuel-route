@@ -4,6 +4,7 @@ import httpx
 import numpy as np
 import pytest
 import respx
+from django.core.cache import cache
 
 from fuel.services import routing
 
@@ -110,6 +111,27 @@ def test_ors_failure_falls_back_to_osrm_once(ors_key, status):
     respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
     route, calls = routing.fetch_route(START, END)
     assert calls == 2 and route.provider == "osrm:driving"
+
+
+def test_after_an_ors_failure_ors_is_skipped_for_a_while(ors_key):
+    ors = respx.post(ORS_URL).mock(return_value=httpx.Response(503))
+    respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
+    _, first = routing.fetch_route(START, END)
+    _, second = routing.fetch_route(START, END, ((40.5, -90.0),))  # e.g. the detour in the same request
+
+    assert (first, second) == (2, 1) and ors.call_count == 1
+
+
+def test_ors_is_tried_again_once_the_cooldown_expires(ors_key):
+    respx.post(ORS_URL).mock(return_value=httpx.Response(503))
+    respx.get(url__startswith=OSRM_URL).mock(return_value=httpx.Response(200, json=osrm_body()))
+    routing.fetch_route(START, END)
+    assert cache.get(routing.ORS_DOWN_KEY) is not None
+
+    cache.delete(routing.ORS_DOWN_KEY)  # what the cooldown's expiry does
+    respx.post(ORS_URL).mock(return_value=httpx.Response(200, json=ors_body()))
+    route, calls = routing.fetch_route(START, END)
+    assert calls == 1 and route.provider.startswith("openrouteservice")
 
 
 @pytest.mark.parametrize("code", [2004, 2009, 2010])

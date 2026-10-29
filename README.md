@@ -88,7 +88,8 @@ ORS_API_KEY=your-token
 
 Restart the server (`make run`, or `docker compose up` re-reads `.env`). Responses then show
 `"routing_provider": "openrouteservice:driving-hgv"`. If ORS is down, rejects the key or its daily quota runs out,
-the request falls back to OSRM once.
+the request falls back to OSRM once, and ORS is skipped for the next minute, so a detour in the same request (or
+the next requests) doesn't pay for a second failed call.
 
 ### Troubleshooting
 
@@ -180,7 +181,7 @@ start/finish ──► resolve offline (city / ZIP / lat,lon) ──► route ca
 **Routing calls.**
 - Places are resolved offline, from Census and GeoNames files committed to the repo. That leaves the route as the only external call.
 - Two caches (Redis, or a file cache). The route is cached by its end points, so changing `stop_cost` or `start_fuel` never triggers a new routing call. The finished plan is cached by end points and parameters, so a repeat skips matching and optimising too. Simultaneous requests for the same new route share one routing call: the first fetches it, the others wait for the cached result.
-- **Worst case:** an address the offline data can't place costs one geocoding call each for start and finish (cached for a day). An ORS outage, used-up daily quota or rejected key costs one OSRM fallback call. A route the price list can't fuel costs one or two detour calls.
+- **Worst case:** an address the offline data can't place costs one geocoding call each for start and finish (cached for a day). An ORS outage, used-up daily quota or rejected key costs one OSRM fallback call, once: ORS is then skipped for a minute. A route the price list can't fuel costs one or two detour calls.
 
 **Matching stations to the route.**
 - All 6,626 stations are loaded into memory with one SQL query.
@@ -244,7 +245,7 @@ ZipCode (code PK, lat, lon)
 ## Tests
 
 ```bash
-make test    # 560 tests, including 400 randomised checks against the exact solver; no network access
+make test    # 562 tests, including 400 randomised checks against the exact solver; no network access
 make coverage  # the same, with a coverage report (CI fails below 85%; it's ~87%)
 make live    # optional: a test against the real routing API
 ```
