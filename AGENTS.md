@@ -6,7 +6,7 @@ this file covers how the code is put together and the rules that keep it correct
 ## Commands
 
 ```bash
-make setup   # venv (Python 3.12+), dependencies, .env, SQLite with all stations and places
+make setup   # venv (Python 3.14; 3.12+ supported), dependencies, .env, SQLite with all stations and places
 make run     # http://localhost:8000 (PORT=8001 for another port); /map is the UI
 make test    # pytest, no network: every HTTP call must be mocked
 make coverage  # tests + coverage report; fails under 85% (pyproject.toml)

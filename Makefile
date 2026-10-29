@@ -10,7 +10,7 @@ setup:  ## venv, dependencies, .env, database (SQLite) loaded from the committed
 	@if [ -x $(PY) ] && ! $(PY) -c 'import sys; sys.exit(sys.version_info < (3, 12))' 2>/dev/null; then \
 		echo "Removing .venv: it was built with Python older than 3.12"; rm -rf .venv; fi
 	@if [ ! -x $(PY) ]; then \
-		if command -v uv >/dev/null 2>&1; then uv venv --python 3.12 .venv; \
+		if command -v uv >/dev/null 2>&1; then uv venv --python 3.14 .venv; \
 		elif [ -n "$(PYTHON)" ]; then echo "Using $(PYTHON)"; $(PYTHON) -m venv .venv; \
 		else echo "Python 3.12+ not found. Install uv (https://docs.astral.sh/uv/) or Python 3.12+ (python.org), then run make setup again."; exit 1; fi; fi
 	@if command -v uv >/dev/null 2>&1; then uv pip install -q --python $(PY) -r requirements-dev.txt; \

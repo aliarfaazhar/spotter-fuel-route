@@ -25,7 +25,8 @@ make setup     # ~1 min: virtualenv, dependencies, .env, SQLite database with al
 make run       # serves on http://localhost:8000 (another port: make run PORT=8001)
 ```
 
-`make setup` picks the newest Python 3.12+ it finds, even where `python3` is older (macOS ships 3.9). It is safe
+`make setup` uses Python 3.14 (uv downloads it into its own store if needed, without changing your system Python).
+Without uv it picks the newest Python 3.12+ it finds, even where `python3` is older (macOS ships 3.9). It is safe
 to run again.
 
 ### Check it works
@@ -64,14 +65,14 @@ This runs the API under gunicorn with PostgreSQL and Redis, as in production. `m
 ### Without make (Windows)
 
 ```powershell
-py -3.12 -m venv .venv
+py -3.14 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements-dev.txt
 copy .env.example .env
 .venv\Scripts\python manage.py migrate
 .venv\Scripts\python manage.py runserver 8000
 ```
 
-On macOS/Linux the same steps are `python3.12 -m venv .venv`, `.venv/bin/python -m pip install -r
+On macOS/Linux the same steps are `python3.14 -m venv .venv` (3.12 or newer works), `.venv/bin/python -m pip install -r
 requirements-dev.txt`, `cp .env.example .env`, then `.venv/bin/python manage.py migrate` and `... runserver 8000`.
 Don't skip copying `.env`: it turns on development mode, without which the dev server refuses the built-in
 development secret key.
@@ -113,7 +114,7 @@ the request falls back to OSRM once.
 | Total spent on fuel at 10 mpg | `total_fuel_cost` is the sum of the stop costs, to the cent, and `total_gallons` is the gallons bought. `trip_fuel_cost` is what all the fuel the trip burns is worth: the same figure when the tank starts empty, and with fuel already in the tank it values those gallons at the local listed price, so a full-tank trip doesn't show $0 |
 | Fast | A new route takes 0.2–0.5 s for most trips and ~1.3 s coast to coast, nearly all of it the routing API; our own work is ~30 ms (`meta.timings_ms`). The route is requested as an encoded polyline (a sixth of the size of GeoJSON) over a connection kept open between requests. A repeat is answered from the cached plan in ~10 ms. Under load in Docker (2 gunicorn workers, Redis): about 700 requests/s, median 14 ms at 10 concurrent clients, 73 ms at 50 |
 | One routing call is ideal | One routing call per new route and zero for a repeat. The only exception is a route the price list can't fuel, which takes one more call for a detour (two at most). `meta.external_api_calls` reports the count on every response |
-| Latest stable Django | Django 6.1.2 with Django REST Framework 3.18 |
+| Latest stable Django | Django 6.1.2 with Django REST Framework 3.18.3, on Python 3.14 (the newest Python Django 6.1 supports; 3.12+ works, and CI tests both 3.14 and 3.12) |
 
 ## API
 
