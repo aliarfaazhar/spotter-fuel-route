@@ -10,6 +10,25 @@ GET /api/route?start=New York, NY&finish=Los Angeles, CA
 → 1 call to the routing API (0 when repeated) · ~10 ms for a repeat request
 ```
 
+### The map page
+
+The API also comes with a small map page at `http://localhost:8000/map`. It calls the same `/api/route` endpoint,
+with place-name autocomplete.
+
+![New York to Los Angeles: 7 fuel stops on the map, the cost, and each stop's station, gallons and price](screenshots/map-new-york-to-los-angeles.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="screenshots/map-detour-san-francisco-to-seattle.png" alt="San Francisco to Seattle: a detour through Nevada and Oregon"></td>
+    <td width="50%"><img src="screenshots/map-start.png" alt="The map page before a search, with example routes"></td>
+  </tr>
+  <tr>
+    <td><b>San Francisco → Seattle.</b> The direct route (dotted) has 548 miles with no listed station (red), so
+    the plan detours via Sparks, NV and Madras, OR.</td>
+    <td><b>Start screen.</b> Type a city, ZIP code or coordinates, or pick an example route.</td>
+  </tr>
+</table>
+
 ## Quick start
 
 No API key, signup or database server is needed: the station and place data ship with the repo, and routing uses
